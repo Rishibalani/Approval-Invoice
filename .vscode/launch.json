@@ -1,0 +1,24 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Microsoft cloud sandbox",
+      "request": "launch",
+      "type": "al",
+      "environmentType": "Sandbox",
+      "environmentName": "Pulse365-Canada_UAT",
+      // "environmentName": "Pulse365-Canada_Dev",
+      //"environmentName": "Olix365lite_Dev",
+      //"environmentName": "PulseNet365_Demo",
+      //"environmentName": "Demo",
+      "startupObjectId": 22,
+      "startupObjectType": "Page",
+      "breakOnError": "All",
+      "launchBrowser": true,
+      "enableLongRunningSqlStatements": true,
+      "enableSqlInformationDebugger": true,
+      //"schemaUpdateMode": "ForceSync"
+      "schemaUpdateMode": "Synchronize"
+    }
+  ]
+}
