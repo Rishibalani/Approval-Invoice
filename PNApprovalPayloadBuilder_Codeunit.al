@@ -324,6 +324,18 @@ codeunit 50105 "PN Approval Payload Builder"
         // fallback or simply stalls the invoice.
         Approver.Add('substituteName', ResolveSubstituteName(Outbox."Approver User ID"));
 
+        // WhatsApp only. Consent defaults to false on the identity record, and
+        // the sender refuses without it - transmitting an approver's name, a
+        // vendor and an amount to a third-party messaging platform needs a
+        // recorded basis under GDPR and the India DPDP Act.
+        if HasIdentity then begin
+            Approver.Add('mobileNumber', Identity."Mobile Number");
+            Approver.Add('consentGiven', Identity."Consent Given");
+        end else begin
+            Approver.Add('mobileNumber', '');
+            Approver.Add('consentGiven', false);
+        end;
+
         Approver.Add('channels', Channels);
     end;
 
