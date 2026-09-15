@@ -67,6 +67,11 @@ codeunit 50105 "PN Approval Payload Builder"
         Source.Add('environment', Setup."Environment Tag");
         Source.Add('companyName', CompanyName());
         Source.Add('companyId', Format(GetCompanyId(), 0, 4));
+
+        // The card resolves a blank document Currency Code to this. Without
+        // it, a local-currency invoice renders as a bare number and the
+        // approver has to guess what they are approving.
+        Source.Add('localCurrencyCode', GetLocalCurrencyCode());
     end;
 
     local procedure BuildApproval(var Outbox: Record "PN Approval Outbox") Approval: JsonObject
@@ -153,6 +158,21 @@ codeunit 50105 "PN Approval Payload Builder"
                         PurchaseHeader.CalcFields(Amount, "Amount Including VAT");
                         Doc.Add('amountExclTax', PurchaseHeader.Amount);
                         Doc.Add('amountInclTax', PurchaseHeader."Amount Including VAT");
+                        Doc.Add('taxAmount', PurchaseHeader."Amount Including VAT" - PurchaseHeader.Amount);
+
+                        // Tells the card the two figures are real rather than
+                        // both defaulted to the same number. Without it the
+                        // card cannot distinguish "no tax breakdown sent" from
+                        // "tax is genuinely zero", so it drops both rows.
+                        Doc.Add('hasTaxBreakdown', true);
+
+                        Doc.Add('documentTypeCaption', GetDocumentTypeCaption(Outbox, true));
+                        Doc.Add('dimension1Display', DimensionDisplay(1, PurchaseHeader."Shortcut Dimension 1 Code"));
+                        Doc.Add('dimension2Display', DimensionDisplay(2, PurchaseHeader."Shortcut Dimension 2 Code"));
+                        Doc.Add('createdByName', ResolveUserNameBySecurityId(PurchaseHeader.SystemCreatedBy));
+                        Doc.Add('createdUtc', FormatUtc(PurchaseHeader.SystemCreatedAt));
+                        Doc.Add('attachmentCount', CountAttachments(Outbox));
+                        Doc.Add('totalLineCount', CountPurchaseLines(PurchaseHeader));
                         Doc.Add('deepLink', Setup.BuildDeepLink(Page::"Purchase Invoice", PurchaseHeader));
                         if Setup."Include Document Lines" then
                             Doc.Add('lines', BuildPurchaseLines(PurchaseHeader));
@@ -178,6 +198,16 @@ codeunit 50105 "PN Approval Payload Builder"
                         SalesHeader.CalcFields(Amount, "Amount Including VAT");
                         Doc.Add('amountExclTax', SalesHeader.Amount);
                         Doc.Add('amountInclTax', SalesHeader."Amount Including VAT");
+                        Doc.Add('taxAmount', SalesHeader."Amount Including VAT" - SalesHeader.Amount);
+                        Doc.Add('hasTaxBreakdown', true);
+
+                        Doc.Add('documentTypeCaption', GetDocumentTypeCaption(Outbox, false));
+                        Doc.Add('dimension1Display', DimensionDisplay(1, SalesHeader."Shortcut Dimension 1 Code"));
+                        Doc.Add('dimension2Display', DimensionDisplay(2, SalesHeader."Shortcut Dimension 2 Code"));
+                        Doc.Add('createdByName', ResolveUserNameBySecurityId(SalesHeader.SystemCreatedBy));
+                        Doc.Add('createdUtc', FormatUtc(SalesHeader.SystemCreatedAt));
+                        Doc.Add('attachmentCount', CountAttachments(Outbox));
+                        Doc.Add('totalLineCount', CountSalesLines(SalesHeader));
                         Doc.Add('deepLink', Setup.BuildDeepLink(Page::"Sales Invoice", SalesHeader));
                         if Setup."Include Document Lines" then
                             Doc.Add('lines', BuildSalesLines(SalesHeader));
@@ -202,6 +232,7 @@ codeunit 50105 "PN Approval Payload Builder"
                 Line.Add('lineNo', PurchaseLine."Line No.");
                 Line.Add('description', PurchaseLine.Description);
                 Line.Add('quantity', PurchaseLine.Quantity);
+                Line.Add('unitOfMeasure', PurchaseLine."Unit of Measure Code");
                 Line.Add('unitCost', PurchaseLine."Direct Unit Cost");
                 Line.Add('lineAmount', PurchaseLine."Line Amount");
                 Lines.Add(Line);
@@ -222,6 +253,7 @@ codeunit 50105 "PN Approval Payload Builder"
                 Line.Add('lineNo', SalesLine."Line No.");
                 Line.Add('description', SalesLine.Description);
                 Line.Add('quantity', SalesLine.Quantity);
+                Line.Add('unitOfMeasure', SalesLine."Unit of Measure Code");
                 Line.Add('unitPrice', SalesLine."Unit Price");
                 Line.Add('lineAmount', SalesLine."Line Amount");
                 Lines.Add(Line);
@@ -286,6 +318,11 @@ codeunit 50105 "PN Approval Payload Builder"
         if not IsSuspended then
             foreach ChannelName in Setup.GetEnabledChannels() do
                 Channels.Add(ChannelName);
+
+        // The substitute is who Business Central routes to if this approver
+        // does not act. Shown so an approver knows whether inaction has a
+        // fallback or simply stalls the invoice.
+        Approver.Add('substituteName', ResolveSubstituteName(Outbox."Approver User ID"));
 
         Approver.Add('channels', Channels);
     end;
@@ -369,6 +406,26 @@ codeunit 50105 "PN Approval Payload Builder"
         exit('Unknown');
     end;
 
+    /// <summary>
+    /// The approver's configured substitute, resolved to a display name.
+    /// Empty when none is set, which is the common case.
+    /// </summary>
+    local procedure ResolveSubstituteName(ApproverUserId: Code[50]): Text
+    var
+        UserSetup: Record "User Setup";
+    begin
+        if ApproverUserId = '' then
+            exit('');
+
+        if not UserSetup.Get(ApproverUserId) then
+            exit('');
+
+        if UserSetup.Substitute = '' then
+            exit('');
+
+        exit(ResolveUserName(UserSetup.Substitute));
+    end;
+
     /// <summary>Display name for a Business Central user name, falling back to the ID.</summary>
     local procedure ResolveUserName(UserName: Code[50]): Text
     var
@@ -397,6 +454,152 @@ codeunit 50105 "PN Approval Payload Builder"
             exit(User."Authentication Email");
 
         exit('');
+    end;
+
+    // ------------------------------------------------------------------
+    //  Enrichment helpers
+    //
+    //  Each of these exists because the card reads a field the payload did not
+    //  previously carry. They fail soft: a missing dimension, an unreadable
+    //  user or an absent attachment table returns an empty value and the card
+    //  drops that row, rather than the whole dispatch failing over a
+    //  decoration.
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// The company's home currency. A blank Currency Code on a document means
+    /// LCY in Business Central, and the card needs this to say so.
+    /// </summary>
+    local procedure GetLocalCurrencyCode(): Text
+    var
+        GeneralLedgerSetup: Record "General Ledger Setup";
+    begin
+        if not GeneralLedgerSetup.Get() then
+            exit('');
+
+        exit(GeneralLedgerSetup."LCY Code");
+    end;
+
+    /// <summary>
+    /// "Purchase invoice approval", "Purchase credit memo approval", and so
+    /// on. Built from the document type rather than hard-coded, so a credit
+    /// memo does not announce itself as an invoice.
+    /// </summary>
+    local procedure GetDocumentTypeCaption(var Outbox: Record "PN Approval Outbox"; IsPurchase: Boolean): Text
+    var
+        Side: Text;
+        Kind: Text;
+    begin
+        if IsPurchase then
+            Side := 'Purchase'
+        else
+            Side := 'Sales';
+
+        case Outbox."Document Type" of
+            Outbox."Document Type"::Invoice:
+                Kind := 'invoice';
+            Outbox."Document Type"::"Credit Memo":
+                Kind := 'credit memo';
+            else
+                Kind := LowerCase(Format(Outbox."Document Type"));
+        end;
+
+        exit(Side + ' ' + Kind + ' approval');
+    end;
+
+    /// <summary>
+    /// "MARKETING - Marketing Department". Code alone is meaningless to an
+    /// approver who does not work with the dimension daily; the name alone is
+    /// ambiguous when two dimensions share one.
+    /// </summary>
+    local procedure DimensionDisplay(DimensionNo: Integer; DimensionCode: Code[20]): Text
+    var
+        GeneralLedgerSetup: Record "General Ledger Setup";
+        DimensionValue: Record "Dimension Value";
+        DimensionCodeField: Code[20];
+    begin
+        if DimensionCode = '' then
+            exit('');
+
+        if not GeneralLedgerSetup.Get() then
+            exit(DimensionCode);
+
+        if DimensionNo = 1 then
+            DimensionCodeField := GeneralLedgerSetup."Shortcut Dimension 1 Code"
+        else
+            DimensionCodeField := GeneralLedgerSetup."Shortcut Dimension 2 Code";
+
+        if DimensionCodeField = '' then
+            exit(DimensionCode);
+
+        if not DimensionValue.Get(DimensionCodeField, DimensionCode) then
+            exit(DimensionCode);
+
+        if DimensionValue.Name = '' then
+            exit(DimensionCode);
+
+        exit(DimensionCode + ' - ' + DimensionValue.Name);
+    end;
+
+    /// <summary>
+    /// Display name for a user security ID. SystemCreatedBy holds the GUID,
+    /// not the user name, so this is the only way to show who raised a
+    /// document.
+    /// </summary>
+    local procedure ResolveUserNameBySecurityId(SecurityId: Guid): Text
+    var
+        User: Record User;
+    begin
+        if IsNullGuid(SecurityId) then
+            exit('');
+
+        if not User.Get(SecurityId) then
+            exit('');
+
+        if User."Full Name" <> '' then
+            exit(User."Full Name");
+
+        exit(User."User Name");
+    end;
+
+    /// <summary>
+    /// Attachments on the document. The card only says how many - listing them
+    /// would mean either linking to content the approver may not have rights
+    /// to, or embedding it, and neither belongs on a notification.
+    /// </summary>
+    local procedure CountAttachments(var Outbox: Record "PN Approval Outbox"): Integer
+    var
+        DocumentAttachment: Record "Document Attachment";
+    begin
+        DocumentAttachment.SetRange("Table ID", Outbox."Table ID");
+        DocumentAttachment.SetRange("No.", Outbox."Document No.");
+        DocumentAttachment.SetRange("Document Type", Outbox."Document Type");
+        exit(DocumentAttachment.Count());
+    end;
+
+    /// <summary>
+    /// The TRUE line count, which is not the same as the number of lines on
+    /// the card - the card caps at ten so it stays under the Teams size limit.
+    /// The difference is what lets it say "+4 more".
+    /// </summary>
+    local procedure CountPurchaseLines(var PurchaseHeader: Record "Purchase Header"): Integer
+    var
+        PurchaseLine: Record "Purchase Line";
+    begin
+        PurchaseLine.SetRange("Document Type", PurchaseHeader."Document Type");
+        PurchaseLine.SetRange("Document No.", PurchaseHeader."No.");
+        PurchaseLine.SetFilter(Type, '<>%1', PurchaseLine.Type::" ");
+        exit(PurchaseLine.Count());
+    end;
+
+    local procedure CountSalesLines(var SalesHeader: Record "Sales Header"): Integer
+    var
+        SalesLine: Record "Sales Line";
+    begin
+        SalesLine.SetRange("Document Type", SalesHeader."Document Type");
+        SalesLine.SetRange("Document No.", SalesHeader."No.");
+        SalesLine.SetFilter(Type, '<>%1', SalesLine.Type::" ");
+        exit(SalesLine.Count());
     end;
 
     local procedure GetCompanyId(): Guid

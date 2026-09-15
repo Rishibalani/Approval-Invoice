@@ -41,6 +41,10 @@ codeunit 50103 "PN Approval Http Client"
         HttpErr: Label 'The dispatch endpoint returned %1 %2. %3', Comment = '%1 = status, %2 = reason, %3 = body';
         NoSigningSecretForSignErr: Label 'No HMAC signing secret is available, so the payload cannot be signed. Open Approval Integration Setup and enter the Signing Secret - it must match Dispatch__SigningSecret on the Azure Function exactly.';
 
+    /// <summary>
+    /// Posts one outbox payload. Returns true on a 2xx. Never throws for a
+    /// transport or HTTP error - the caller records the failure on the row and
+    /// schedules a retry, which is the whole reason the outbox exists.
     /// </summary>
     [TryFunction]
     procedure TryPost(var Outbox: Record "PN Approval Outbox"; PayloadText: Text)

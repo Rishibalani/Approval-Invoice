@@ -78,7 +78,8 @@ page 50100 "PN Approval Entries API"
             ExpectedAmountLcy,
             ActionChannel,
             ActionDevice,
-            ActionCorrelationId));
+            ActionCorrelationId,
+            ActionComment));
     end;
 
     [ServiceEnabled]
@@ -97,7 +98,8 @@ page 50100 "PN Approval Entries API"
             ExpectedAmountLcy,
             ActionChannel,
             ActionDevice,
-            ActionCorrelationId));
+            ActionCorrelationId,
+            ActionComment));
     end;
 
     // Context supplied by the caller as OData action parameters. Kept as page
@@ -108,6 +110,7 @@ page 50100 "PN Approval Entries API"
         ActionChannel: Text;
         ActionDevice: Text;
         ActionCorrelationId: Text;
+        ActionComment: Text;
 
     [ServiceEnabled]
     procedure setActionContext(approverUserId: Code[50]; amountLcy: Decimal; channel: Text; device: Text; correlationId: Text): Text
@@ -117,6 +120,20 @@ page 50100 "PN Approval Entries API"
         ActionChannel := channel;
         ActionDevice := device;
         ActionCorrelationId := correlationId;
+        exit('OK');
+    end;
+
+    /// <summary>
+    /// The approver's own words, written to an Approval Comment Line before
+    /// the decision is recorded.
+    ///
+    /// Separate from setActionContext so an existing caller that does not send
+    /// a comment keeps working unchanged.
+    /// </summary>
+    [ServiceEnabled]
+    procedure setActionComment(comment: Text): Text
+    begin
+        ActionComment := comment;
         exit('OK');
     end;
 }

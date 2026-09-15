@@ -50,16 +50,37 @@ codeunit 50100 "PN Approval Action Handler"
     /// </summary>
     procedure Approve(ApprovalEntryNo: Integer; ExpectedApproverUserId: Code[50]; ExpectedAmountLcy: Decimal; Channel: Text; DeviceInfo: Text; CorrelationId: Text) ResultCode: Text
     begin
-        exit(Execute(ApprovalEntryNo, ExpectedApproverUserId, ExpectedAmountLcy, Channel, DeviceInfo, CorrelationId, true));
+        exit(Execute(ApprovalEntryNo, ExpectedApproverUserId, ExpectedAmountLcy, Channel, DeviceInfo, CorrelationId, '', true));
+    end;
+
+    /// <summary>
+    /// Approves with an approver comment. The comment is written to an
+    /// Approval Comment Line, which is the permanent record - a comment that
+    /// exists only in a log is not an audit trail.
+    /// </summary>
+    procedure Approve(ApprovalEntryNo: Integer; ExpectedApproverUserId: Code[50]; ExpectedAmountLcy: Decimal; Channel: Text; DeviceInfo: Text; CorrelationId: Text; ApproverComment: Text) ResultCode: Text
+    begin
+        exit(Execute(ApprovalEntryNo, ExpectedApproverUserId, ExpectedAmountLcy, Channel, DeviceInfo, CorrelationId, ApproverComment, true));
     end;
 
     /// <summary>Rejects one Approval Entry. Same contract as Approve.</summary>
     procedure Reject(ApprovalEntryNo: Integer; ExpectedApproverUserId: Code[50]; ExpectedAmountLcy: Decimal; Channel: Text; DeviceInfo: Text; CorrelationId: Text) ResultCode: Text
     begin
-        exit(Execute(ApprovalEntryNo, ExpectedApproverUserId, ExpectedAmountLcy, Channel, DeviceInfo, CorrelationId, false));
+        exit(Execute(ApprovalEntryNo, ExpectedApproverUserId, ExpectedAmountLcy, Channel, DeviceInfo, CorrelationId, '', false));
     end;
 
-    local procedure Execute(ApprovalEntryNo: Integer; ExpectedApproverUserId: Code[50]; ExpectedAmountLcy: Decimal; Channel: Text; DeviceInfo: Text; CorrelationId: Text; IsApprove: Boolean) ResultCode: Text
+    /// <summary>
+    /// Rejects with a reason. The Azure side refuses an empty reason before
+    /// reaching here when RequireRejectionReason is on, but this overload does
+    /// not assume that - a caller that supplies nothing still gets a valid
+    /// rejection, just without a recorded reason.
+    /// </summary>
+    procedure Reject(ApprovalEntryNo: Integer; ExpectedApproverUserId: Code[50]; ExpectedAmountLcy: Decimal; Channel: Text; DeviceInfo: Text; CorrelationId: Text; RejectionReason: Text) ResultCode: Text
+    begin
+        exit(Execute(ApprovalEntryNo, ExpectedApproverUserId, ExpectedAmountLcy, Channel, DeviceInfo, CorrelationId, RejectionReason, false));
+    end;
+
+    local procedure Execute(ApprovalEntryNo: Integer; ExpectedApproverUserId: Code[50]; ExpectedAmountLcy: Decimal; Channel: Text; DeviceInfo: Text; CorrelationId: Text; ApproverComment: Text; IsApprove: Boolean) ResultCode: Text
     var
         ApprovalEntry: Record "Approval Entry";
         ApprovalsMgmt: Codeunit "Approvals Mgmt.";
@@ -99,7 +120,13 @@ codeunit 50100 "PN Approval Action Handler"
         else
             ApprovalsMgmt.RejectApprovalRequests(ApprovalEntry);
 
-        // -------- Audit: channel and device on every action --------
+        // -------- Audit: the approver's own words, then the provenance --------
+        //
+        // Comment first, so it reads in the order a person would write it:
+        // what they said, then how it reached us.
+        if ApproverComment <> '' then
+            AddCommentLine(ApprovalEntry, ApproverComment);
+
         RecordChannel(ApprovalEntry, Channel, DeviceInfo, CorrelationId, IsApprove);
 
         exit(OkTok);
@@ -112,34 +139,73 @@ codeunit 50100 "PN Approval Action Handler"
     /// </summary>
     local procedure RecordChannel(var ApprovalEntry: Record "Approval Entry"; Channel: Text; DeviceInfo: Text; CorrelationId: Text; IsApprove: Boolean)
     var
-        ApprovalCommentLine: Record "Approval Comment Line";
-        NextLineNo: Integer;
         CommentText: Text;
     begin
         if Channel = '' then
             Channel := 'Unknown';
-
-        ApprovalCommentLine.SetRange("Table ID", ApprovalEntry."Table ID");
-        ApprovalCommentLine.SetRange("Document Type", ApprovalEntry."Document Type");
-        ApprovalCommentLine.SetRange("Document No.", ApprovalEntry."Document No.");
-        if ApprovalCommentLine.FindLast() then
-            NextLineNo := ApprovalCommentLine."Entry No." + 10000
-        else
-            NextLineNo := 10000;
 
         if IsApprove then
             CommentText := StrSubstNo(ChannelCommentTxt, Channel, DeviceInfo, CorrelationId)
         else
             CommentText := StrSubstNo(RejectCommentTxt, Channel, DeviceInfo, CorrelationId);
 
-        ApprovalCommentLine.Init();
-        ApprovalCommentLine."Table ID" := ApprovalEntry."Table ID";
-        ApprovalCommentLine."Document Type" := ApprovalEntry."Document Type";
-        ApprovalCommentLine."Document No." := ApprovalEntry."Document No.";
-        ApprovalCommentLine."Entry No." := NextLineNo;
-        ApprovalCommentLine."Record ID to Approve" := ApprovalEntry."Record ID to Approve";
-        ApprovalCommentLine.Comment := CopyStr(CommentText, 1, MaxStrLen(ApprovalCommentLine.Comment));
-        ApprovalCommentLine.Insert(true);
+        AddCommentLine(ApprovalEntry, CommentText);
+    end;
+
+    /// <summary>
+    /// Appends one Approval Comment Line.
+    ///
+    /// This is the permanent, auditable record - the same table a comment
+    /// typed in the Business Central client lands in, so a decision made from
+    /// Outlook or Teams is indistinguishable from one made in the web client
+    /// when somebody reviews it a year later.
+    ///
+    /// Comment is a short text field, so anything longer is split across
+    /// several lines rather than silently truncated. A rejection reason cut
+    /// off mid-sentence is worse than no reason at all.
+    /// </summary>
+    local procedure AddCommentLine(var ApprovalEntry: Record "Approval Entry"; CommentText: Text)
+    var
+        ApprovalCommentLine: Record "Approval Comment Line";
+        NextEntryNo: Integer;
+        Remaining: Text;
+        Chunk: Text;
+        MaxLen: Integer;
+    begin
+        if CommentText = '' then
+            exit;
+
+        ApprovalCommentLine.SetRange("Table ID", ApprovalEntry."Table ID");
+        ApprovalCommentLine.SetRange("Document Type", ApprovalEntry."Document Type");
+        ApprovalCommentLine.SetRange("Document No.", ApprovalEntry."Document No.");
+        if ApprovalCommentLine.FindLast() then
+            NextEntryNo := ApprovalCommentLine."Entry No." + 10000
+        else
+            NextEntryNo := 10000;
+
+        MaxLen := MaxStrLen(ApprovalCommentLine.Comment);
+        Remaining := CommentText;
+
+        while Remaining <> '' do begin
+            if StrLen(Remaining) <= MaxLen then begin
+                Chunk := Remaining;
+                Remaining := '';
+            end else begin
+                Chunk := CopyStr(Remaining, 1, MaxLen);
+                Remaining := CopyStr(Remaining, MaxLen + 1);
+            end;
+
+            ApprovalCommentLine.Init();
+            ApprovalCommentLine."Table ID" := ApprovalEntry."Table ID";
+            ApprovalCommentLine."Document Type" := ApprovalEntry."Document Type";
+            ApprovalCommentLine."Document No." := ApprovalEntry."Document No.";
+            ApprovalCommentLine."Entry No." := NextEntryNo;
+            ApprovalCommentLine."Record ID to Approve" := ApprovalEntry."Record ID to Approve";
+            ApprovalCommentLine.Comment := CopyStr(Chunk, 1, MaxLen);
+            ApprovalCommentLine.Insert(true);
+
+            NextEntryNo += 10000;
+        end;
     end;
 
     local procedure VendorBankChangedSince(var ApprovalEntry: Record "Approval Entry"): Boolean
