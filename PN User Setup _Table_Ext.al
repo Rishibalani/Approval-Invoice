@@ -105,33 +105,132 @@ tableextension 50100 "PN User Setup Ext" extends "User Setup"
     var
         E164Err: Label 'The mobile number must be in E.164 format and start with a plus sign, for example +919722821516.';
 
+    // ==================================================================
+    //  EMAIL RESOLUTION - ONE BLOCK ACTIVE AT A TIME
+    // ==================================================================
+    //
+    //  Two versions live below. Exactly ONE must be uncommented.
+    //
+    //  ------------------------------------------------------------------
+    //   CURRENTLY ACTIVE:  BLOCK A  (LOCAL TESTING)
+    //  ------------------------------------------------------------------
+    //
+    //  WHEN DEPLOYING TO UAT OR PRODUCTION:
+    //    1. Comment out BLOCK A  - both PNResolveEmail and PNEmailSource
+    //    2. Uncomment BLOCK B    - both PNResolveEmail and PNEmailSource
+    //    3. Search this file for "BLOCK A" to confirm nothing is left active
+    //
+    //  WHY THEY DIFFER
+    //
+    //  Block A reads E-Mail from this Approval User Setup row. That field is
+    //  editable, so a tester can point approval mail at their own address
+    //  without touching anyone's sign-in details.
+    //
+    //  Block B reads Authentication Email from the User record. That is the
+    //  Entra UPN - the address the person actually signs in with, maintained
+    //  by whoever manages Microsoft 365, and impossible to get wrong by
+    //  editing the wrong row. It is read-only on SaaS, which is precisely why
+    //  it is unsuitable for local testing and right for production.
+    //
+    //  THE RISK IN BLOCK A, STATED PLAINLY
+    //
+    //  An approver with a blank E-Mail on their Approval User Setup row
+    //  receives NOTHING. No error, no bounce - the dispatcher records
+    //  "no email address" on the outbox row and moves on. Fine when you are
+    //  testing one person; silently drops everybody else.
+    //
+    //  A THIRD OPTION, IF YOU WANT IT LATER
+    //
+    //  Prefer E-Mail when set, fall back to Authentication Email. That gives
+    //  production the override - useful when a finance team wants approvals
+    //  reaching a shared inbox several people watch - while still working for
+    //  an approver nobody has configured. Business Central's own approval
+    //  notifications read E-Mail, so it follows an established convention.
+    //  Not active here because the instruction was a clean either/or.
+    // ==================================================================
+
+    // ┌────────────────────────────────────────────────────────────────┐
+    // │  BLOCK A - LOCAL TESTING - ACTIVE                              │
+    // │  Reads: Approval User Setup -> E-Mail                          │
+    // └────────────────────────────────────────────────────────────────┘
+
     /// <summary>
-    /// The approver's email, read from the User table.
+    /// LOCAL TESTING. Reads only the E-Mail field on this Approval User Setup
+    /// row, so a tester can redirect approval mail by editing one editable
+    /// field. An approver with a blank E-Mail receives nothing.
     ///
-    /// There is deliberately no Employee fallback. Invoice approvers are
-    /// finance and procurement people who frequently have no Employee record,
-    /// and with no email on the User record there is nothing to match an
-    /// employee ON - the only available key would be the email itself. A
-    /// fallback that cannot fire is worse than none, because it reads as
-    /// though the case is handled.
-    ///
-    /// An approver with no Authentication Email cannot be reached by email or
-    /// Teams. That is a user-provisioning problem, and the dispatcher logs it
-    /// as one rather than papering over it.
+    /// Swap to Block B before UAT or production.
     /// </summary>
     procedure PNResolveEmail() Email: Text[250]
-    var
-        User: Record User;
     begin
         if "User ID" = '' then
             exit('');
 
-        User.SetRange("User Name", "User ID");
-        if User.FindFirst() then
-            exit(User."Authentication Email");
-
-        exit('');
+        exit(CopyStr("E-Mail", 1, 250));
     end;
+
+    /// <summary>Which source supplied the address, for the diagnostic page.</summary>
+    procedure PNEmailSource(): Text
+    begin
+        if "User ID" = '' then
+            exit('no user id');
+
+        if "E-Mail" <> '' then
+            exit('Approval User Setup, E-Mail (BLOCK A - local testing)');
+
+        exit('NOWHERE - E-Mail is blank on this row. Block A reads only this field; ' +
+             'the User-table version is Block B in PN User Setup _Table_Ext.al');
+    end;
+
+    // ┌────────────────────────────────────────────────────────────────┐
+    // │  BLOCK B - UAT AND PRODUCTION - COMMENTED OUT                  │
+    // │  Reads: User -> Authentication Email                           │
+    // │  Uncomment this and comment Block A above before deploying.    │
+    // └────────────────────────────────────────────────────────────────┘
+
+    // /// <summary>
+    // /// UAT AND PRODUCTION. Reads Authentication Email from the User record -
+    // /// the Entra UPN the person signs in with, maintained by whoever manages
+    // /// Microsoft 365.
+    // ///
+    // /// Read-only on SaaS, which is why it cannot be used for local testing
+    // /// and why it is the right source for production: there is no second
+    // /// field to fall out of step, and a new approver works on day one with
+    // /// nobody having to configure anything.
+    // /// </summary>
+    // procedure PNResolveEmail() Email: Text[250]
+    // var
+    //     User: Record User;
+    // begin
+    //     if "User ID" = '' then
+    //         exit('');
+    //
+    //     User.SetRange("User Name", "User ID");
+    //     if User.FindFirst() then
+    //         exit(User."Authentication Email");
+    //
+    //     exit('');
+    // end;
+    //
+    // /// <summary>Which source supplied the address, for the diagnostic page.</summary>
+    // procedure PNEmailSource(): Text
+    // var
+    //     User: Record User;
+    // begin
+    //     if "User ID" = '' then
+    //         exit('no user id');
+    //
+    //     User.SetRange("User Name", "User ID");
+    //     if User.FindFirst() then
+    //         if User."Authentication Email" <> '' then
+    //             exit('Users, Authentication Email (BLOCK B - UAT/production)');
+    //
+    //     exit('NOWHERE - no Authentication Email on this user''s User record');
+    // end;
+
+    // ==================================================================
+    //  END OF EMAIL RESOLUTION
+    // ==================================================================
 
     /// <summary>Display name for this approver, falling back to the user ID.</summary>
     procedure PNResolveFullName(): Text

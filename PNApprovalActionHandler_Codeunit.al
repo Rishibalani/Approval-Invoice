@@ -40,8 +40,13 @@ codeunit 50100 "PN Approval Action Handler"
         AmountChangedTok: Label 'AMOUNT_CHANGED', Locked = true;
         BankChangedTok: Label 'BANK_DETAILS_CHANGED', Locked = true;
         OkTok: Label 'OK', Locked = true;
-        ChannelCommentTxt: Label 'Approved via %1 (device: %2, correlation: %3)', Comment = '%1 = channel, %2 = device, %3 = correlation id';
-        RejectCommentTxt: Label 'Rejected via %1 (device: %2, correlation: %3)', Comment = '%1 = channel, %2 = device, %3 = correlation id';
+        // The audit line. Names the ACTOR explicitly rather than relying on
+        // the record's User ID field, because that records the account the
+        // callback ran as - the service account - not the person who pressed
+        // the button. Without this, every channel approval in the audit trail
+        // would appear to have been made by the integration.
+        ChannelCommentTxt: Label '%1 approved via %2 at %3 UTC (device: %4, ref: %5)', Comment = '%1 = approver, %2 = channel, %3 = utc timestamp, %4 = device, %5 = correlation id';
+        RejectCommentTxt: Label '%1 rejected via %2 at %3 UTC (device: %4, ref: %5)', Comment = '%1 = approver, %2 = channel, %3 = utc timestamp, %4 = device, %5 = correlation id';
 
     /// <summary>
     /// Approves one Approval Entry.
@@ -140,16 +145,47 @@ codeunit 50100 "PN Approval Action Handler"
     local procedure RecordChannel(var ApprovalEntry: Record "Approval Entry"; Channel: Text; DeviceInfo: Text; CorrelationId: Text; IsApprove: Boolean)
     var
         CommentText: Text;
+        ActorName: Text;
+        ActedAtUtc: Text;
     begin
         if Channel = '' then
             Channel := 'Unknown';
 
+        // UTC, not local. An audit trail read a year later, possibly in
+        // another country, should not need somebody to work out which timezone
+        // the service tier was in.
+        ActedAtUtc := Format(CurrentDateTime(), 0, 9);
+
+        ActorName := ResolveActorName(ApprovalEntry."Approver ID");
+
         if IsApprove then
-            CommentText := StrSubstNo(ChannelCommentTxt, Channel, DeviceInfo, CorrelationId)
+            CommentText := StrSubstNo(ChannelCommentTxt, ActorName, Channel, ActedAtUtc, DeviceInfo, CorrelationId)
         else
-            CommentText := StrSubstNo(RejectCommentTxt, Channel, DeviceInfo, CorrelationId);
+            CommentText := StrSubstNo(RejectCommentTxt, ActorName, Channel, ActedAtUtc, DeviceInfo, CorrelationId);
 
         AddCommentLine(ApprovalEntry, CommentText);
+    end;
+
+    /// <summary>
+    /// The person the approval was assigned to, named for the audit line.
+    ///
+    /// The approver, not whoever the callback authenticated as. Those differ
+    /// by design - the service account acts on the approver's behalf - and the
+    /// audit trail has to record the human.
+    /// </summary>
+    local procedure ResolveActorName(ApproverUserId: Code[50]): Text
+    var
+        User: Record User;
+    begin
+        if ApproverUserId = '' then
+            exit('Unknown approver');
+
+        User.SetRange("User Name", ApproverUserId);
+        if User.FindFirst() then
+            if User."Full Name" <> '' then
+                exit(User."Full Name" + ' (' + ApproverUserId + ')');
+
+        exit(ApproverUserId);
     end;
 
     /// <summary>

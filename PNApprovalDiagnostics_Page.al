@@ -462,11 +462,16 @@ page 50106 "PN Approval Diagnostics"
         RecipientEmail := UserSetup.PNResolveEmail();
         if RecipientEmail = '' then begin
             Builder.AppendLine('   STOP: No email address.');
-            Builder.AppendLine('   Set Authentication Email on their Business Central user record.');
+            Builder.AppendLine('   Set E-Mail on their Approval User Setup row, or make sure');
+            Builder.AppendLine('   their User record has an Authentication Email.');
             Message(Builder.ToText());
             exit;
         end;
         Builder.AppendLine('   OK: ' + RecipientEmail);
+        Builder.AppendLine('   Source: ' + UserSetup.PNEmailSource());
+        Builder.AppendLine('   Which block is active is set in PN User Setup _Table_Ext.al.');
+        Builder.AppendLine('   Block A reads Approval User Setup E-Mail (local testing).');
+        Builder.AppendLine('   Block B reads Users Authentication Email (UAT/production).');
 
         // ---- 6. Send it for real ----
         Builder.AppendLine('');

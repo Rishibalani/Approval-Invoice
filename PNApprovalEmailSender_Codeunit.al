@@ -46,7 +46,7 @@ codeunit 50107 "PN Approval Email Sender"
 
     var
         SubjectTok: Label 'Approval needed: %1 - %2 - %3', Comment = '%1 = document no., %2 = counterparty, %3 = amount';
-        NoRecipientErr: Label 'No email address for approver %1. Check Authentication Email on their Business Central user record.', Comment = '%1 = user id';
+        NoRecipientErr: Label 'No email address for approver %1. Which field is read depends on the active block in PN User Setup Ext - Block A reads E-Mail on Approval User Setup, Block B reads Authentication Email on the User record.', Comment = '%1 = user id';
 
     /// <summary>
     /// Sends the approval email for one outbox row.
@@ -163,22 +163,58 @@ codeunit 50107 "PN Approval Email Sender"
         Builder.Append('<tr><td style="padding-top:20px;">');
         Builder.Append('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;">');
 
+        // Same facts, same order as the Teams and WhatsApp cards. All three
+        // are built from the same document, so an approver comparing two
+        // channels must not see two different invoices.
         Builder.Append(Row('Document', Outbox."Document No."));
-        Builder.Append(Row(CounterpartyLabel(Outbox), GetCounterpartyName(Outbox)));
-        Builder.Append(Row('Amount', FormatMoney(Outbox.Amount, Outbox."Currency Code")));
+        Builder.Append(Row(CounterpartyLabel(Outbox), ComposeParty(Outbox)));
 
-        if Outbox.Amount <> Outbox."Amount (LCY)" then
+        if PayToDiffers(Outbox) then
+            Builder.Append(Row('Pay-to', PayToName(Outbox)));
+
+        Builder.Append(Row('Their reference', ExternalDocumentNo(Outbox)));
+
+        // Tax breakdown only when there is one. Printing the same number twice
+        // under two labels makes the email longer without making it clearer.
+        if HasTaxBreakdown(Outbox) then begin
+            Builder.Append(Row('Amount excl. tax', FormatMoney(AmountExclTax(Outbox), Outbox."Currency Code")));
+            if TaxAmount(Outbox) > 0 then
+                Builder.Append(Row('Tax', FormatMoney(TaxAmount(Outbox), Outbox."Currency Code")));
+            Builder.Append(Row('Amount incl. tax', FormatMoney(AmountInclTax(Outbox), Outbox."Currency Code")));
+        end else
+            Builder.Append(Row('Amount', FormatMoney(Outbox.Amount, Outbox."Currency Code")));
+
+        // Only interesting on a foreign-currency document, and that is exactly
+        // when an approver needs it.
+        if (Outbox."Currency Code" <> '') and (Outbox.Amount <> Outbox."Amount (LCY)") then
             Builder.Append(Row('Local value', FormatMoney(Outbox."Amount (LCY)", '')));
 
+        Builder.Append(Row('Document date', FormatDate(DocumentDate(Outbox))));
+        Builder.Append(Row('Posting date', FormatDate(PostingDate(Outbox))));
+        Builder.Append(Row('Due date', FormatDate(DueDate(Outbox))));
+        Builder.Append(Row('Dimension', DimensionDisplay(1, Dimension1(Outbox))));
+        Builder.Append(Row('Cost centre', DimensionDisplay(2, Dimension2(Outbox))));
+
         if ApprovalEntry.Get(Outbox."Approval Entry No.") then begin
+            Builder.Append(Row('Requested by', ResolveUserName(ApprovalEntry."Sender ID")));
+            Builder.Append(Row('Submitted', FormatDateTime(ApprovalEntry."Date-Time Sent for Approval")));
+
             if ApprovalEntry."Due Date" <> 0D then
                 Builder.Append(Row('Respond by', Format(ApprovalEntry."Due Date")));
-
-            Builder.Append(Row('Requested by', ResolveUserName(ApprovalEntry."Sender ID")));
         end;
 
-        Builder.Append(Row('Approval step', Format(Outbox."Sequence No.")));
         Builder.Append('</table></td></tr>');
+
+        // ---- Lines ----
+        Builder.Append(BuildLinesTable(Outbox));
+
+        // ---- Chain position ----
+        //
+        // "Approval 2 of 3" rather than a bare step number. Whether this is
+        // the last approval changes what approving MEANS - it either passes
+        // the invoice on or releases it - and an approver should not have to
+        // open Business Central to find that out.
+        Builder.Append(ChainContextRow(Outbox));
 
         // ---- Warnings, above the buttons ----
         //
@@ -321,6 +357,411 @@ codeunit 50107 "PN Approval Email Sender"
             exit(true);
 
         exit(Abs(Outbox."Amount (LCY)") <= Limit);
+    end;
+
+    // ------------------------------------------------------------------
+    //  Document detail
+    //
+    //  Each of these reads the live document rather than the outbox row. The
+    //  outbox froze the amount and the risk flags at capture time, deliberately
+    //  - they are what the policy decision was based on. Everything else is
+    //  read fresh so the email shows the invoice as it stands now.
+    // ------------------------------------------------------------------
+
+    local procedure GetPurchase(var Outbox: Record "PN Approval Outbox"; var PurchaseHeader: Record "Purchase Header"): Boolean
+    var
+        RecRef: RecordRef;
+    begin
+        if Outbox."Table ID" <> Database::"Purchase Header" then
+            exit(false);
+        if not RecRef.Get(Outbox."Record ID to Approve") then
+            exit(false);
+
+        RecRef.SetTable(PurchaseHeader);
+        exit(true);
+    end;
+
+    local procedure GetSales(var Outbox: Record "PN Approval Outbox"; var SalesHeader: Record "Sales Header"): Boolean
+    var
+        RecRef: RecordRef;
+    begin
+        if Outbox."Table ID" <> Database::"Sales Header" then
+            exit(false);
+        if not RecRef.Get(Outbox."Record ID to Approve") then
+            exit(false);
+
+        RecRef.SetTable(SalesHeader);
+        exit(true);
+    end;
+
+    /// <summary>"Catering Vendor (V00001)" - name and number together.</summary>
+    local procedure ComposeParty(var Outbox: Record "PN Approval Outbox"): Text
+    var
+        PurchaseHeader: Record "Purchase Header";
+        SalesHeader: Record "Sales Header";
+    begin
+        if GetPurchase(Outbox, PurchaseHeader) then
+            exit(Compose(PurchaseHeader."Buy-from Vendor Name", PurchaseHeader."Buy-from Vendor No."));
+        if GetSales(Outbox, SalesHeader) then
+            exit(Compose(SalesHeader."Sell-to Customer Name", SalesHeader."Sell-to Customer No."));
+        exit('');
+    end;
+
+    local procedure PayToName(var Outbox: Record "PN Approval Outbox"): Text
+    var
+        PurchaseHeader: Record "Purchase Header";
+        SalesHeader: Record "Sales Header";
+    begin
+        if GetPurchase(Outbox, PurchaseHeader) then
+            exit(Compose(PurchaseHeader."Pay-to Name", PurchaseHeader."Pay-to Vendor No."));
+        if GetSales(Outbox, SalesHeader) then
+            exit(Compose(SalesHeader."Bill-to Name", SalesHeader."Bill-to Customer No."));
+        exit('');
+    end;
+
+    /// <summary>
+    /// Whether payment goes somewhere other than the party who raised the
+    /// invoice. Worth surfacing: it is the commonest payment-redirection
+    /// signal in accounts payable, and it is otherwise three clicks deep.
+    /// </summary>
+    local procedure PayToDiffers(var Outbox: Record "PN Approval Outbox"): Boolean
+    var
+        PurchaseHeader: Record "Purchase Header";
+        SalesHeader: Record "Sales Header";
+    begin
+        if GetPurchase(Outbox, PurchaseHeader) then
+            exit(PurchaseHeader."Pay-to Vendor No." <> PurchaseHeader."Buy-from Vendor No.");
+        if GetSales(Outbox, SalesHeader) then
+            exit(SalesHeader."Bill-to Customer No." <> SalesHeader."Sell-to Customer No.");
+        exit(false);
+    end;
+
+    local procedure ExternalDocumentNo(var Outbox: Record "PN Approval Outbox"): Text
+    var
+        PurchaseHeader: Record "Purchase Header";
+        SalesHeader: Record "Sales Header";
+    begin
+        if GetPurchase(Outbox, PurchaseHeader) then
+            exit(PurchaseHeader."Vendor Invoice No.");
+        if GetSales(Outbox, SalesHeader) then
+            exit(SalesHeader."External Document No.");
+        exit('');
+    end;
+
+    local procedure HasTaxBreakdown(var Outbox: Record "PN Approval Outbox"): Boolean
+    begin
+        exit(AmountInclTax(Outbox) <> AmountExclTax(Outbox));
+    end;
+
+    local procedure AmountExclTax(var Outbox: Record "PN Approval Outbox"): Decimal
+    var
+        PurchaseHeader: Record "Purchase Header";
+        SalesHeader: Record "Sales Header";
+    begin
+        if GetPurchase(Outbox, PurchaseHeader) then begin
+            PurchaseHeader.CalcFields(Amount);
+            exit(PurchaseHeader.Amount);
+        end;
+        if GetSales(Outbox, SalesHeader) then begin
+            SalesHeader.CalcFields(Amount);
+            exit(SalesHeader.Amount);
+        end;
+        exit(Outbox.Amount);
+    end;
+
+    local procedure AmountInclTax(var Outbox: Record "PN Approval Outbox"): Decimal
+    var
+        PurchaseHeader: Record "Purchase Header";
+        SalesHeader: Record "Sales Header";
+    begin
+        if GetPurchase(Outbox, PurchaseHeader) then begin
+            PurchaseHeader.CalcFields("Amount Including VAT");
+            exit(PurchaseHeader."Amount Including VAT");
+        end;
+        if GetSales(Outbox, SalesHeader) then begin
+            SalesHeader.CalcFields("Amount Including VAT");
+            exit(SalesHeader."Amount Including VAT");
+        end;
+        exit(Outbox.Amount);
+    end;
+
+    local procedure TaxAmount(var Outbox: Record "PN Approval Outbox"): Decimal
+    begin
+        exit(AmountInclTax(Outbox) - AmountExclTax(Outbox));
+    end;
+
+    local procedure DocumentDate(var Outbox: Record "PN Approval Outbox"): Date
+    var
+        PurchaseHeader: Record "Purchase Header";
+        SalesHeader: Record "Sales Header";
+    begin
+        if GetPurchase(Outbox, PurchaseHeader) then
+            exit(PurchaseHeader."Document Date");
+        if GetSales(Outbox, SalesHeader) then
+            exit(SalesHeader."Document Date");
+        exit(0D);
+    end;
+
+    local procedure PostingDate(var Outbox: Record "PN Approval Outbox"): Date
+    var
+        PurchaseHeader: Record "Purchase Header";
+        SalesHeader: Record "Sales Header";
+    begin
+        if GetPurchase(Outbox, PurchaseHeader) then
+            exit(PurchaseHeader."Posting Date");
+        if GetSales(Outbox, SalesHeader) then
+            exit(SalesHeader."Posting Date");
+        exit(0D);
+    end;
+
+    local procedure DueDate(var Outbox: Record "PN Approval Outbox"): Date
+    var
+        PurchaseHeader: Record "Purchase Header";
+        SalesHeader: Record "Sales Header";
+    begin
+        if GetPurchase(Outbox, PurchaseHeader) then
+            exit(PurchaseHeader."Due Date");
+        if GetSales(Outbox, SalesHeader) then
+            exit(SalesHeader."Due Date");
+        exit(0D);
+    end;
+
+    local procedure Dimension1(var Outbox: Record "PN Approval Outbox"): Code[20]
+    var
+        PurchaseHeader: Record "Purchase Header";
+        SalesHeader: Record "Sales Header";
+    begin
+        if GetPurchase(Outbox, PurchaseHeader) then
+            exit(PurchaseHeader."Shortcut Dimension 1 Code");
+        if GetSales(Outbox, SalesHeader) then
+            exit(SalesHeader."Shortcut Dimension 1 Code");
+        exit('');
+    end;
+
+    local procedure Dimension2(var Outbox: Record "PN Approval Outbox"): Code[20]
+    var
+        PurchaseHeader: Record "Purchase Header";
+        SalesHeader: Record "Sales Header";
+    begin
+        if GetPurchase(Outbox, PurchaseHeader) then
+            exit(PurchaseHeader."Shortcut Dimension 2 Code");
+        if GetSales(Outbox, SalesHeader) then
+            exit(SalesHeader."Shortcut Dimension 2 Code");
+        exit('');
+    end;
+
+    /// <summary>
+    /// "MARKETING - Marketing Department". The code alone means nothing to an
+    /// approver who does not work with dimensions daily; the name alone is
+    /// ambiguous when two dimensions share one.
+    /// </summary>
+    local procedure DimensionDisplay(DimensionNo: Integer; DimensionCode: Code[20]): Text
+    var
+        GeneralLedgerSetup: Record "General Ledger Setup";
+        DimensionValue: Record "Dimension Value";
+        DimensionCodeField: Code[20];
+    begin
+        if DimensionCode = '' then
+            exit('');
+        if not GeneralLedgerSetup.Get() then
+            exit(DimensionCode);
+
+        if DimensionNo = 1 then
+            DimensionCodeField := GeneralLedgerSetup."Shortcut Dimension 1 Code"
+        else
+            DimensionCodeField := GeneralLedgerSetup."Shortcut Dimension 2 Code";
+
+        if DimensionCodeField = '' then
+            exit(DimensionCode);
+        if not DimensionValue.Get(DimensionCodeField, DimensionCode) then
+            exit(DimensionCode);
+        if DimensionValue.Name = '' then
+            exit(DimensionCode);
+
+        exit(DimensionCode + ' - ' + DimensionValue.Name);
+    end;
+
+    // ------------------------------------------------------------------
+    //  Lines
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// The first ten lines, with a count of any remainder.
+    ///
+    /// Ten is the cap the Teams card uses, and matching it keeps the channels
+    /// honest - an approver who sees eight lines in Teams and twelve in email
+    /// has no idea which to trust.
+    ///
+    /// Blank and comment lines are excluded. They carry no amount and pad the
+    /// list with rows an approver has to skip past.
+    /// </summary>
+    local procedure BuildLinesTable(var Outbox: Record "PN Approval Outbox") Html: Text
+    var
+        PurchaseHeader: Record "Purchase Header";
+        PurchaseLine: Record "Purchase Line";
+        SalesHeader: Record "Sales Header";
+        SalesLine: Record "Sales Line";
+        Builder: TextBuilder;
+        Shown: Integer;
+        Total: Integer;
+        MaxLines: Integer;
+        CurrencyCode: Code[10];
+    begin
+        // Ten, matching the Teams card. Matching matters more than the number:
+        // an approver who sees eight lines in Teams and twelve in email has no
+        // idea which to trust.
+        MaxLines := 10;
+        CurrencyCode := Outbox."Currency Code";
+
+        if GetPurchase(Outbox, PurchaseHeader) then begin
+            PurchaseLine.SetRange("Document Type", PurchaseHeader."Document Type");
+            PurchaseLine.SetRange("Document No.", PurchaseHeader."No.");
+            PurchaseLine.SetFilter(Type, '<>%1', PurchaseLine.Type::" ");
+            Total := PurchaseLine.Count();
+
+            if Total = 0 then
+                exit('');
+
+            Builder.Append(LinesHeader());
+
+            if PurchaseLine.FindSet() then
+                repeat
+                    Shown += 1;
+                    Builder.Append(LineRow(
+                        PurchaseLine.Description,
+                        PurchaseLine.Quantity,
+                        PurchaseLine."Unit of Measure Code",
+                        PurchaseLine."Line Amount",
+                        CurrencyCode));
+                until (PurchaseLine.Next() = 0) or (Shown >= MaxLines);
+        end else
+            if GetSales(Outbox, SalesHeader) then begin
+                SalesLine.SetRange("Document Type", SalesHeader."Document Type");
+                SalesLine.SetRange("Document No.", SalesHeader."No.");
+                SalesLine.SetFilter(Type, '<>%1', SalesLine.Type::" ");
+                Total := SalesLine.Count();
+
+                if Total = 0 then
+                    exit('');
+
+                Builder.Append(LinesHeader());
+
+                if SalesLine.FindSet() then
+                    repeat
+                        Shown += 1;
+                        Builder.Append(LineRow(
+                            SalesLine.Description,
+                            SalesLine.Quantity,
+                            SalesLine."Unit of Measure Code",
+                            SalesLine."Line Amount",
+                            CurrencyCode));
+                    until (SalesLine.Next() = 0) or (Shown >= MaxLines);
+            end else
+                exit('');
+
+        Builder.Append('</table>');
+
+        if Total > Shown then
+            Builder.Append(StrSubstNo(
+                '<div style="color:#999;font-size:12px;margin-top:6px;">%1 more line(s). Open in Business Central to see them all.</div>',
+                Total - Shown));
+
+        Builder.Append('</td></tr>');
+        exit(Builder.ToText());
+    end;
+
+    local procedure LinesHeader(): Text
+    begin
+        exit('<tr><td style="padding-top:20px;">' +
+             '<div style="font-size:13px;font-weight:600;margin-bottom:6px;">Lines</div>' +
+             '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" ' +
+             'style="font-size:13px;border-collapse:collapse;">' +
+             '<tr style="color:#666;">' +
+             '<td style="padding:4px 0;border-bottom:1px solid #e1e1e1;">Description</td>' +
+             '<td style="padding:4px 0;border-bottom:1px solid #e1e1e1;text-align:right;">Qty</td>' +
+             '<td style="padding:4px 0 4px 12px;border-bottom:1px solid #e1e1e1;text-align:right;">Amount</td>' +
+             '</tr>');
+    end;
+
+    local procedure LineRow(Description: Text; Quantity: Decimal; UnitOfMeasure: Code[10]; LineAmount: Decimal; CurrencyCode: Code[10]): Text
+    var
+        QtyText: Text;
+    begin
+        QtyText := Format(Quantity, 0, '<Precision,0:5><Standard Format,0>');
+        if UnitOfMeasure <> '' then
+            QtyText += ' ' + UnitOfMeasure;
+
+        exit('<tr>' +
+             '<td style="padding:4px 0;">' + Enc(Description) + '</td>' +
+             '<td style="padding:4px 0;text-align:right;white-space:nowrap;">' + Enc(QtyText) + '</td>' +
+             '<td style="padding:4px 0 4px 12px;text-align:right;white-space:nowrap;">' +
+             Enc(FormatMoney(LineAmount, CurrencyCode)) + '</td></tr>');
+    end;
+
+    /// <summary>
+    /// "Approval 2 of 3" and what approving means at this step.
+    ///
+    /// The distinction matters: approving a middle step passes the invoice on,
+    /// approving the last one releases it. An approver should not have to open
+    /// Business Central to learn which they are about to do.
+    /// </summary>
+    local procedure ChainContextRow(var Outbox: Record "PN Approval Outbox") Html: Text
+    var
+        ApprovalEntry: Record "Approval Entry";
+        Total: Integer;
+        Text: Text;
+    begin
+        if not ApprovalEntry.Get(Outbox."Approval Entry No.") then
+            exit('');
+
+        Total := CountChainSteps(ApprovalEntry);
+
+        if Total <= 1 then
+            exit('');
+
+        if Outbox."Sequence No." >= Total then
+            Text := StrSubstNo(
+                'Approval %1 of %2. This is the final approval - approving releases the invoice.',
+                Outbox."Sequence No.", Total)
+        else
+            Text := StrSubstNo(
+                'Approval %1 of %2. Further approval is required after yours.',
+                Outbox."Sequence No.", Total);
+
+        exit('<tr><td style="padding-top:16px;color:#666;font-size:13px;">' + Enc(Text) + '</td></tr>');
+    end;
+
+    local procedure CountChainSteps(var ApprovalEntry: Record "Approval Entry"): Integer
+    var
+        Chain: Record "Approval Entry";
+    begin
+        Chain.SetRange("Table ID", ApprovalEntry."Table ID");
+        Chain.SetRange("Document Type", ApprovalEntry."Document Type");
+        Chain.SetRange("Document No.", ApprovalEntry."Document No.");
+        exit(Chain.Count());
+    end;
+
+    local procedure Compose(Name: Text; No: Code[20]): Text
+    begin
+        if Name = '' then
+            exit(No);
+        if No = '' then
+            exit(Name);
+        exit(Name + ' (' + No + ')');
+    end;
+
+    local procedure FormatDate(Value: Date): Text
+    begin
+        if Value = 0D then
+            exit('');
+        exit(Format(Value));
+    end;
+
+    local procedure FormatDateTime(Value: DateTime): Text
+    begin
+        if Value = 0DT then
+            exit('');
+        exit(Format(Value, 0, '<Day,2>/<Month,2>/<Year4> <Hours24,2>:<Minutes,2>'));
     end;
 
     // ------------------------------------------------------------------
