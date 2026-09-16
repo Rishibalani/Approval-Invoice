@@ -263,78 +263,72 @@ codeunit 50105 "PN Approval Payload Builder"
     // ------------------------------------------------------------------
     //  Who to deliver to, and on which channels.
     // ------------------------------------------------------------------
+    /// <summary>
+    /// Who to deliver to, and on which channels.
+    ///
+    /// Reads Approval User Setup, which is where approver configuration lives.
+    /// This used to read a separate PN Approver Channel Identity table; that
+    /// table held four fields that did real work and eight that were caches or
+    /// obsolete, and Approval User Setup already has a row for every approver
+    /// along with their limit, approver and substitute.
+    /// </summary>
     local procedure BuildApprover(var Outbox: Record "PN Approval Outbox"; var Setup: Record "PN Approval Integration Setup") Approver: JsonObject
     var
-        Identity: Record "PN Approver Channel Identity";
+        UserSetup: Record "User Setup";
         Channels: JsonArray;
         ChannelName: Text;
-        HasIdentity: Boolean;
+        HasSetup: Boolean;
         IsSuspended: Boolean;
-        UserSetup: Record "User Setup";
+        ApproverEmail: Text;
     begin
         Approver.Add('userId', Outbox."Approver User ID");
         Approver.Add('userSecurityId', Format(Outbox."Approver User Security ID", 0, 4));
 
-        HasIdentity := Identity.Get(Outbox."Approver User Security ID");
-        if not HasIdentity then
-            HasIdentity := Identity.GetOrCreate(Outbox."Approver User Security ID");
+        HasSetup := UserSetup.PNGetOrCreate(Outbox."Approver User ID");
 
-        if HasIdentity then begin
-            Approver.Add('displayName', Identity."Full Name");
-            // ResolveEmail walks User first, then Employee. Invoice approvers
-            // often have no Employee record at all, so the User table is the
-            // source and Employee is only a fallback.
-            Approver.Add('upn', Identity.ResolveEmail());
-                        // User Setup is the source of truth for the Entra object ID - it is
-            // where approver configuration is already maintained. The identity
-            // row keeps a cached copy, used only when User Setup has none.
-            if UserSetup.Get(Outbox."Approver User ID") and not IsNullGuid(UserSetup."PN Entra Object ID") then
-                Approver.Add('entraObjectId', Format(UserSetup."PN Entra Object ID", 0, 4))
-            else
-                if not IsNullGuid(Identity."Entra Object ID") then
-                    Approver.Add('entraObjectId', Format(Identity."Entra Object ID", 0, 4));
-            IsSuspended := Identity.Suspended;
+        if HasSetup then begin
+            ApproverEmail := UserSetup.PNResolveEmail();
+
+            Approver.Add('displayName', UserSetup.PNResolveFullName());
+            Approver.Add('upn', ApproverEmail);
+
+            if not IsNullGuid(UserSetup."PN Entra Object ID") then
+                Approver.Add('entraObjectId', Format(UserSetup."PN Entra Object ID", 0, 4));
+
+            // WhatsApp only. Consent defaults to false, and the sender refuses
+            // without it - transmitting an approver's name, a vendor and an
+            // amount to a third-party messaging platform needs a recorded
+            // basis under GDPR and the India DPDP Act.
+            Approver.Add('mobileNumber', UserSetup."PN Mobile Number");
+            Approver.Add('consentGiven', UserSetup."PN WhatsApp Consent");
+
+            Approver.Add('substituteName', ResolveUserName(UserSetup.Substitute));
+
+            IsSuspended := UserSetup."PN Channel Notifications Off";
         end else begin
-            // No identity row and no User record. The Function routes to the
-            // fallback and raises an operational alert rather than dropping it.
+            // No Approval User Setup row at all. Business Central would not
+            // have routed an approval to this person, so this should not
+            // happen - but failing closed beats a payload with holes in it.
             Approver.Add('displayName', Outbox."Approver User ID");
+            Approver.Add('mobileNumber', '');
+            Approver.Add('consentGiven', false);
         end;
 
         Approver.Add('suspended', IsSuspended);
-
-        // Fallback is global too. One setting, one place to change it.
         Approver.Add('fallbackChannel', Format(Setup."Global Fallback Channel"));
 
         // ---------------------------------------------------------------
-        //  Channels come from the GLOBAL toggles on Approval Channel Setup,
-        //  never from this approver. Business Central owns this decision
-        //  entirely: the Azure Function sends to exactly the channels named
-        //  here and has no way to add one that is not.
+        //  Channels come from the GLOBAL toggles, never from this approver,
+        //  and Outlook is absent by design - Business Central sends that email
+        //  itself now, so listing it here would produce a second one.
         //
         //  Suspension is the only per-person override, and it removes every
-        //  channel rather than any particular one - someone on leave should
-        //  be chased nowhere, not chased somewhere else.
+        //  channel rather than any particular one: somebody on leave should be
+        //  chased nowhere, not chased somewhere else.
         // ---------------------------------------------------------------
         if not IsSuspended then
             foreach ChannelName in Setup.GetEnabledChannels() do
                 Channels.Add(ChannelName);
-
-        // The substitute is who Business Central routes to if this approver
-        // does not act. Shown so an approver knows whether inaction has a
-        // fallback or simply stalls the invoice.
-        Approver.Add('substituteName', ResolveSubstituteName(Outbox."Approver User ID"));
-
-        // WhatsApp only. Consent defaults to false on the identity record, and
-        // the sender refuses without it - transmitting an approver's name, a
-        // vendor and an amount to a third-party messaging platform needs a
-        // recorded basis under GDPR and the India DPDP Act.
-        if HasIdentity then begin
-            Approver.Add('mobileNumber', Identity."Mobile Number");
-            Approver.Add('consentGiven', Identity."Consent Given");
-        end else begin
-            Approver.Add('mobileNumber', '');
-            Approver.Add('consentGiven', false);
-        end;
 
         Approver.Add('channels', Channels);
     end;
@@ -344,7 +338,7 @@ codeunit 50105 "PN Approval Payload Builder"
     // ------------------------------------------------------------------
     local procedure BuildPolicy(var Outbox: Record "PN Approval Outbox"; var Setup: Record "PN Approval Integration Setup") Policy: JsonObject
     var
-        Identity: Record "PN Approver Channel Identity";
+        UserSetup: Record "User Setup";
         Reasons: JsonArray;
         CanApproveInChannel: Boolean;
     begin
@@ -360,8 +354,11 @@ codeunit 50105 "PN Approval Payload Builder"
             Reasons.Add('VendorBankDetailsChanged');
         end;
 
-        if Identity.Get(Outbox."Approver User Security ID") then
-            if Identity.Suspended then begin
+        // Keyed on User ID now rather than User Security ID. Approval User
+        // Setup is keyed that way, and the outbox already carries the user ID
+        // it captured at insert time.
+        if UserSetup.Get(Outbox."Approver User ID") then
+            if UserSetup."PN Channel Notifications Off" then begin
                 CanApproveInChannel := false;
                 Reasons.Add('ApproverSuspended');
             end;

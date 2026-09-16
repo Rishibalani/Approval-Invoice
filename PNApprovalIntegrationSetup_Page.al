@@ -164,11 +164,41 @@ page 50104 "PN Approval Integration Setup"
                 field("Include Document Lines"; Rec."Include Document Lines") { ApplicationArea = All; }
             }
 
+            group(ActionLinks)
+            {
+                Caption = 'Approval Links';
+                InstructionalText = 'Business Central builds the Approve and Reject links in every email. Azure validates them and records the decision, so both sides must share the same secret.';
+
+                field("Action Endpoint URL"; Rec."Action Endpoint URL") { ApplicationArea = All; }
+
+                field(ActionTokenInput; ActionTokenInput)
+                {
+                    ApplicationArea = All;
+                    Caption = 'Action Token Secret';
+                    ExtendedDatatype = Masked;
+                    ToolTip = 'Must match ActionToken__SigningSecret on the Azure Function byte for byte. A mismatch makes every link fail with no explanation, so paste rather than type.';
+
+                    trigger OnValidate()
+                    begin
+                        StoreActionTokenSecret();
+                    end;
+                }
+                field(ActionTokenStored; ActionTokenStored)
+                {
+                    ApplicationArea = All;
+                    Caption = 'Stored';
+                    Editable = false;
+                    StyleExpr = ActionTokenStyle;
+                }
+                field("Action Token TTL (Min.)"; Rec."Action Token TTL (Min.)") { ApplicationArea = All; }
+            }
+
             group(FinancialControls)
             {
                 Caption = 'Financial Controls';
 
                 field("High Value Threshold (LCY)"; Rec."High Value Threshold (LCY)") { ApplicationArea = All; }
+                field("Outlook Max Approve (LCY)"; Rec."Outlook Max Approve (LCY)") { ApplicationArea = All; }
                 field("Block On Vendor Bank Change"; Rec."Block On Vendor Bank Change")
                 {
                     ApplicationArea = All;
@@ -399,9 +429,10 @@ page 50104 "PN Approval Integration Setup"
                 action(OpenIdentities)
                 {
                     ApplicationArea = All;
-                    Caption = 'Approver Channel Identities';
+                    Caption = 'Approval User Setup';
                     Image = Users;
-                    RunObject = page "PN Approver Channel Identities";
+                    RunObject = page "Approval User Setup";
+                    ToolTip = 'Per-approver settings: mobile number, WhatsApp consent, personal approval ceiling and notification suspension. These used to live on a separate page; they are now on the standard Approval User Setup alongside limits and substitutes.';
                 }
             }
         }
@@ -426,6 +457,9 @@ page 50104 "PN Approval Integration Setup"
         FunctionKeyInput: Text;
         SigningSecretInput: Text;
         ClientSecretInput: Text;
+        ActionTokenInput: Text;
+        ActionTokenStored: Boolean;
+        ActionTokenStyle: Text;
 
         // Indicators are page variables, not Rec fields. Reading Rec inside a
         // field OnValidate is unreliable - the framework is mid-validation and
@@ -518,6 +552,22 @@ page 50104 "PN Approval Integration Setup"
         CurrPage.Update(false);
     end;
 
+    local procedure StoreActionTokenSecret()
+    begin
+        if ActionTokenInput = '' then
+            exit;
+
+        Rec.SetActionTokenSecret(Trim(ActionTokenInput));
+        ActionTokenInput := '';
+
+        RefreshStoredIndicators();
+
+        if not ActionTokenStored then
+            Error(StoreFailedErr);
+
+        CurrPage.Update(false);
+    end;
+
     local procedure StoreClientSecret()
     begin
         if ClientSecretInput = '' then
@@ -568,6 +618,8 @@ page 50104 "PN Approval Integration Setup"
         FunctionKeyStored := Rec.GetFunctionKey() <> '';
         SigningSecretStored := Rec.GetSigningSecret() <> '';
         ClientSecretStored := Rec.GetClientSecret() <> '';
+        ActionTokenStored := Rec.GetActionTokenSecret() <> '';
+        ActionTokenStyle := StoredStyle(ActionTokenStored);
 
         FunctionKeyStyle := StoredStyle(FunctionKeyStored);
         SigningSecretStyle := StoredStyle(SigningSecretStored);

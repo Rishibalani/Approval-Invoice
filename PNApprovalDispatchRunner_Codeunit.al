@@ -186,6 +186,24 @@ codeunit 50102 "PN Approval Dispatch Runner"
         Outbox.Status := Outbox.Status::Sending;
         Outbox."Last Error" := '';
         Outbox.Modify(true);
+
+        // ---- Outlook, sent from here -----------------------------------
+        //
+        // Business Central composes and sends the approval email itself, so it
+        // happens alongside the Azure dispatch rather than as part of it.
+        // Azure still owns the buttons: every link carries a signed token that
+        // only the action endpoint can act on.
+        //
+        // AFTER the Last Error clear, not before. Placing it earlier meant any
+        // failure reason it recorded was wiped by that clear one line later,
+        // which produced a silent failure with a blank diagnostic - the worst
+        // combination, because it looks like nothing was attempted.
+        //
+        // Deliberately not allowed to fail the row. If the email bounces but
+        // Teams succeeds, the approver has still been reached, and the outbox
+        // status tracks the dispatch to Azure rather than the email.
+        SendOutlookEmail(Outbox, Setup);
+        Outbox.Modify(true);
         Commit();
 
         if not TryBuildPayload(Outbox, Payload) then begin
@@ -268,6 +286,78 @@ codeunit 50102 "PN Approval Dispatch Runner"
                 exit(Readiness::Skip);
             end;
         end;
+    end;
+
+    /// <summary>
+    /// Sends the Outlook approval email, if that channel is switched on.
+    ///
+    /// Failures are logged on the row's Last Error and otherwise swallowed.
+    /// An email that could not be sent is worth knowing about; it is not worth
+    /// holding up the Teams card that went out fine, and a retry would
+    /// re-send the successful one.
+    /// </summary>
+    local procedure SendOutlookEmail(var Outbox: Record "PN Approval Outbox"; var Setup: Record "PN Approval Integration Setup")
+    var
+        FailureReason: Text;
+    begin
+        // Every exit path records WHY. A channel that silently declines to
+        // send is indistinguishable from one that is broken, and "no error
+        // anywhere" is the hardest state to diagnose.
+        if not Setup."Outlook Channel Enabled" then begin
+            NoteEmailOutcome(Outbox, 'skipped - Outlook is switched off on Approval Channel Setup');
+            exit;
+        end;
+
+        // Only a live request produces an email. Status changes are recorded
+        // in Business Central and do not need a second announcement.
+        if Outbox."Event Type" <> Outbox."Event Type"::Requested then begin
+            NoteEmailOutcome(Outbox, 'skipped - not an approval request');
+            exit;
+        end;
+
+        if TrySendOutlookEmail(Outbox, FailureReason) then begin
+            NoteEmailOutcome(Outbox, 'sent');
+            exit;
+        end;
+
+        if FailureReason = '' then
+            FailureReason := GetLastErrorText();
+
+        ClearLastError();
+
+        if FailureReason = '' then
+            FailureReason := 'failed, no reason reported';
+
+        NoteEmailOutcome(Outbox, FailureReason);
+    end;
+
+    /// <summary>
+    /// Records what happened to the email on the outbox row.
+    ///
+    /// Appended rather than assigned, because the row's Last Error also
+    /// carries the HTTP dispatch result. Overwriting would mean whichever
+    /// finished last won, and the other outcome would vanish.
+    /// </summary>
+    local procedure NoteEmailOutcome(var Outbox: Record "PN Approval Outbox"; Outcome: Text)
+    var
+        Combined: Text;
+    begin
+        Combined := 'Email: ' + Outcome;
+
+        if Outbox."Last Error" <> '' then
+            Combined := Outbox."Last Error" + ' | ' + Combined;
+
+        Outbox."Last Error" := CopyStr(Combined, 1, MaxStrLen(Outbox."Last Error"));
+        Outbox.Modify(true);
+    end;
+
+    [TryFunction]
+    local procedure TrySendOutlookEmail(var Outbox: Record "PN Approval Outbox"; var FailureReason: Text)
+    var
+        EmailSender: Codeunit "PN Approval Email Sender";
+    begin
+        if not EmailSender.TrySendApprovalEmail(Outbox, FailureReason) then
+            Error(FailureReason);
     end;
 
     [TryFunction]

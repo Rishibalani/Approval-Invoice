@@ -246,6 +246,41 @@ table 50102 "PN Approval Integration Setup"
             InitValue = false;
             ToolTip = 'Send approval messages through WhatsApp. Applies to every approver. Requires an approved Meta template and recorded consent.';
         }
+        field(74; "Action Endpoint URL"; Text[250])
+        {
+            Caption = 'Action Endpoint URL';
+            ToolTip = 'Where the Approve and Reject links in an email point, e.g. https://your-function/api/approvals/act. Business Central builds the links; Azure validates the token and records the decision.';
+
+            trigger OnValidate()
+            begin
+                if "Action Endpoint URL" = '' then
+                    exit;
+                if LowerCase(CopyStr("Action Endpoint URL", 1, 8)) <> 'https://' then
+                    Error(HttpsOnlyErr);
+            end;
+        }
+        field(75; "Action Token Secret Set"; Boolean)
+        {
+            Caption = 'Action Token Secret Set';
+            Editable = false;
+            ToolTip = 'Shows whether the action token signing secret is stored. It must match ActionToken__SigningSecret on the Azure Function exactly - it is what lets Azure trust a link Business Central created.';
+        }
+        field(76; "Action Token TTL (Min.)"; Integer)
+        {
+            Caption = 'Action Link Lifetime (Minutes)';
+            InitValue = 30;
+            MinValue = 5;
+            MaxValue = 1440;
+            ToolTip = 'How long an Approve or Reject link stays live. Thirty minutes is long enough for somebody to finish a meeting and short enough that a forwarded screenshot is worthless by the time it spreads. Must not exceed the value configured on the Azure Function.';
+        }
+        field(77; "Outlook Max Approve (LCY)"; Decimal)
+        {
+            Caption = 'Outlook Max Approve (LCY)';
+            MinValue = 0;
+            AutoFormatType = 1;
+            ToolTip = 'Above this amount an email shows no Approve or Reject buttons, only a link into Business Central. A link in an inbox proves less about who clicked it than a Teams card does, so this ceiling is normally lower. Zero means no limit.';
+        }
+
         field(73; "Global Fallback Channel"; Enum "PN Approval Channel")
         {
             Caption = 'Fallback Channel';
@@ -284,6 +319,7 @@ table 50102 "PN Approval Integration Setup"
         SigningSecretTok: Label 'PN-APPROVAL-SIGNING-SECRET', Locked = true;
         ClientSecretTok: Label 'PN-APPROVAL-CLIENT-SECRET', Locked = true;
         AccessTokenTok: Label 'PN-APPROVAL-ACCESS-TOKEN', Locked = true;
+        ActionTokenTok: Label 'PN-APPROVAL-ACTION-TOKEN-SECRET', Locked = true;
 
     /// <summary>Singleton accessor. Call before reading any setting.</summary>
     procedure GetSetup()
@@ -322,6 +358,18 @@ table 50102 "PN Approval Integration Setup"
     procedure GetSigningSecret() Result: Text
     begin
         exit(ReadSecret(SigningSecretTok));
+    end;
+
+    procedure SetActionTokenSecret(NewSecret: Text)
+    begin
+        GetSetup();
+        "Action Token Secret Set" := StoreSecret(ActionTokenTok, NewSecret);
+        Modify(true);
+    end;
+
+    procedure GetActionTokenSecret() Result: Text
+    begin
+        exit(ReadSecret(ActionTokenTok));
     end;
 
     procedure SetClientSecret(NewSecret: Text)
@@ -491,10 +539,14 @@ table 50102 "PN Approval Integration Setup"
     begin
         GetSetup();
 
+        // Teams and WhatsApp only. Outlook is deliberately absent.
+        //
+        // Business Central now composes and sends the approval email itself,
+        // so telling Azure that Outlook is enabled would have it try to send a
+        // second one. The Outlook toggle is still honoured - by the dispatch
+        // runner, on this side - it simply is not Azure's business any more.
         if "Teams Channel Enabled" then
             Channels.Add('Teams');
-        if "Outlook Channel Enabled" then
-            Channels.Add('Outlook');
         if "WhatsApp Channel Enabled" then
             Channels.Add('WhatsApp');
     end;
@@ -518,18 +570,43 @@ table 50102 "PN Approval Integration Setup"
         // Preferred: let the platform build it. In SaaS this returns the full
         // https://businesscentral.dynamics.com/{tenant}/{env}?company=...&bookmark=...
         // form, correctly encoded, pointing at this exact record.
+        // IsRecord and IsRecordRef are different tests, and a Variant holding
+        // a RecordRef answers false to the first. Checking only IsRecord meant
+        // a caller passing a RecordRef fell silently through to the fallback
+        // and got a bare base URL - no error, just a link to nowhere useful.
+        if RecVariant.IsRecordRef() then begin
+            RecRef := RecVariant;
+            exit(GetUrl(ClientType::Web, CompanyName(), ObjectType::Page, PageId, RecRef));
+        end;
+
         if RecVariant.IsRecord() then begin
             RecRef.GetTable(RecVariant);
             exit(GetUrl(ClientType::Web, CompanyName(), ObjectType::Page, PageId, RecRef));
         end;
-        // Fallback: filter-style link when no record was supplied.
+        // Fallback: a filter-style link, used when a document number was
+        // supplied instead of a record.
+        //
+        // This branch used to call RecRef.GetTable(RecVariant) as well, which
+        // threw "cannot convert NavCode to INavRecordHandle" the moment
+        // anything passed a Code[20] - and then built an empty filter anyway,
+        // because DocumentNo was assigned '' rather than read from the
+        // variant. Two faults hiding behind one exception.
         BaseUrl := "BC Base URL";
         if BaseUrl = '' then
             BaseUrl := GetUrl(ClientType::Web);
 
-        RecRef.GetTable(RecVariant);
-        DocumentNo := '';
-        Encoded := '%27' + DocumentNo + '%27';
+        BaseUrl := DelChr(BaseUrl, '>', '/');
+
+        if not RecVariant.IsCode() then
+            if not RecVariant.IsText() then
+                exit(BaseUrl);
+
+        DocumentNo := CopyStr(Format(RecVariant), 1, MaxStrLen(DocumentNo));
+
+        if DocumentNo = '' then
+            exit(BaseUrl);
+
+        Encoded := '%27' + TypeHelper.UriEscapeDataString(DocumentNo) + '%27';
 
         exit(BaseUrl +
             '?company=' + TypeHelper.UriEscapeDataString(CompanyName()) +

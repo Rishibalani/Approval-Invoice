@@ -51,6 +51,37 @@ page 50106 "PN Approval Diagnostics"
     {
         area(Processing)
         {
+            action(TestApprovalEmail)
+            {
+                ApplicationArea = All;
+                Caption = 'Test Approval Email';
+                Image = Email;
+                ToolTip = 'Checks the email configuration end to end and sends a real approval email for the most recent open approval, reporting exactly what happened at each step.';
+
+                trigger OnAction()
+                begin
+                    RunEmailDiagnostic();
+                end;
+            }
+
+            action(OpenSentEmails)
+            {
+                ApplicationArea = All;
+                Caption = 'Sent Emails';
+                Image = Log;
+                RunObject = page "Sent Emails";
+                ToolTip = 'Business Central''s own record of every email it has sent. If an approval email left Business Central, it is listed here.';
+            }
+
+            action(OpenEmailOutbox)
+            {
+                ApplicationArea = All;
+                Caption = 'Email Outbox';
+                Image = Log;
+                RunObject = page "Email Outbox";
+                ToolTip = 'Emails that failed or are still queued. An approval email that never arrived is either here with an error, or was never attempted at all.';
+            }
+
             action(RunDiagnosis)
             {
                 ApplicationArea = All;
@@ -334,5 +365,129 @@ page 50106 "PN Approval Diagnostics"
         end;
 
         DiagnosisText := Builder.ToText();
+    end;
+
+    /// <summary>
+    /// Answers "why did no email arrive" in one click.
+    ///
+    /// Checks each prerequisite in the order it would fail, and stops at the
+    /// first problem rather than reporting all of them - a list of six
+    /// warnings where only the first matters is harder to act on than one
+    /// clear statement.
+    /// </summary>
+    local procedure RunEmailDiagnostic()
+    var
+        Setup: Record "PN Approval Integration Setup";
+        Outbox: Record "PN Approval Outbox";
+        UserSetup: Record "User Setup";
+        EmailSender: Codeunit "PN Approval Email Sender";
+        Builder: TextBuilder;
+        FailureReason: Text;
+        RecipientEmail: Text;
+    begin
+        Builder.AppendLine('=== APPROVAL EMAIL DIAGNOSTIC ===');
+        Builder.AppendLine('');
+
+        // ---- 1. Is the channel even on ----
+        Setup.GetSetup();
+        Builder.AppendLine('1. CHANNEL');
+        if Setup."Outlook Channel Enabled" then
+            Builder.AppendLine('   OK: Outlook is switched on.')
+        else begin
+            Builder.AppendLine('   STOP: Outlook is switched OFF on Approval Channel Setup.');
+            Builder.AppendLine('   Nothing will be sent until that toggle is ticked.');
+            Message(Builder.ToText());
+            exit;
+        end;
+
+        // ---- 2. Email configuration ----
+        //
+        // Deliberately NOT inspected here. The tables behind Email Accounts and
+        // Email Scenario Assignment are System Application internals whose
+        // names and shapes differ between versions, and a diagnostic that
+        // fails to compile is worse than no diagnostic at all.
+        //
+        // Step 7 sends a real email, which is the only honest test anyway - a
+        // configuration that looks right and still does not deliver is exactly
+        // the case this page exists to catch.
+        Builder.AppendLine('');
+        Builder.AppendLine('2. EMAIL CONFIGURATION');
+        Builder.AppendLine('   Not checked here - step 6 sends a real email instead.');
+        Builder.AppendLine('   If it fails, open Email Accounts and use Send Test Email,');
+        Builder.AppendLine('   then check Email Scenario Assignment has an account against');
+        Builder.AppendLine('   the Notification scenario. This code sends on Notification,');
+        Builder.AppendLine('   not Default, and an unassigned scenario fails silently.');
+
+        // ---- 3. Action links ----
+        Builder.AppendLine('');
+        Builder.AppendLine('3. APPROVAL LINKS');
+        if Setup."Action Endpoint URL" = '' then
+            Builder.AppendLine('   WARNING: No Action Endpoint URL. The email will send with no Approve or Reject buttons.')
+        else
+            Builder.AppendLine('   OK: ' + Setup."Action Endpoint URL");
+
+        if Setup.GetActionTokenSecret() = '' then
+            Builder.AppendLine('   WARNING: No action token secret stored. Buttons cannot be built.')
+        else
+            Builder.AppendLine('   OK: action token secret is stored.');
+
+        // ---- 4. A real outbox row ----
+        Builder.AppendLine('');
+        Builder.AppendLine('4. MOST RECENT REQUEST');
+        Outbox.SetRange("Event Type", Outbox."Event Type"::Requested);
+        if not Outbox.FindLast() then begin
+            Builder.AppendLine('   STOP: No approval request in the outbox to test with.');
+            Builder.AppendLine('   Send an invoice for approval first.');
+            Message(Builder.ToText());
+            exit;
+        end;
+        Builder.AppendLine(StrSubstNo('   Entry %1, document %2, approver %3.',
+            Outbox."Entry No.", Outbox."Document No.", Outbox."Approver User ID"));
+
+        // ---- 5. The recipient ----
+        Builder.AppendLine('');
+        Builder.AppendLine('5. RECIPIENT');
+        if not UserSetup.Get(Outbox."Approver User ID") then begin
+            Builder.AppendLine('   STOP: No Approval User Setup row for this approver.');
+            Message(Builder.ToText());
+            exit;
+        end;
+
+        if UserSetup."PN Channel Notifications Off" then begin
+            Builder.AppendLine('   STOP: Channel notifications are suspended for this approver.');
+            Message(Builder.ToText());
+            exit;
+        end;
+
+        RecipientEmail := UserSetup.PNResolveEmail();
+        if RecipientEmail = '' then begin
+            Builder.AppendLine('   STOP: No email address.');
+            Builder.AppendLine('   Set Authentication Email on their Business Central user record.');
+            Message(Builder.ToText());
+            exit;
+        end;
+        Builder.AppendLine('   OK: ' + RecipientEmail);
+
+        // ---- 6. Send it for real ----
+        Builder.AppendLine('');
+        Builder.AppendLine('6. SEND');
+        if EmailSender.TrySendApprovalEmail(Outbox, FailureReason) then begin
+            Builder.AppendLine('   SENT.');
+            Builder.AppendLine('   Check Sent Emails on this page to confirm, then the inbox.');
+        end else begin
+            if FailureReason = '' then
+                FailureReason := GetLastErrorText();
+            ClearLastError();
+            Builder.AppendLine('   FAILED: ' + FailureReason);
+            Builder.AppendLine('');
+            Builder.AppendLine('   Most likely causes, in order:');
+            Builder.AppendLine('   a) The Notification scenario has no account assigned.');
+            Builder.AppendLine('      Search "Email Scenario Assignment".');
+            Builder.AppendLine('   b) No email account is configured at all.');
+            Builder.AppendLine('      Search "Email Accounts" and use Send Test Email.');
+            Builder.AppendLine('   c) The account exists but the send failed - see Email Outbox.');
+        end;
+
+        Message(Builder.ToText());
     end;
 }

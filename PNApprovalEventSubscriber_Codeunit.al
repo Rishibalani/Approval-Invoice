@@ -243,7 +243,7 @@ codeunit 50101 "PN Approval Event Subscriber"
     var
         Outbox: Record "PN Approval Outbox";
         Setup: Record "PN Approval Integration Setup";
-        Identity: Record "PN Approver Channel Identity";
+        UserSetup: Record "User Setup";
         User: Record User;
         Threshold: Decimal;
     begin
@@ -282,9 +282,11 @@ codeunit 50101 "PN Approval Event Subscriber"
         // Financial gates are frozen at capture time, so the decision is made
         // against the amount as submitted rather than whatever the document
         // says by the time the queue drains.
+        // The stricter of the global ceiling and any personal override. A
+        // personal value can only tighten the control, never loosen it.
         Threshold := Setup."High Value Threshold (LCY)";
-        if Identity.Get(Outbox."Approver User Security ID") then
-            Threshold := Identity.EffectiveHighValueThreshold(Threshold);
+        if UserSetup.Get(ApprovalEntry."Approver ID") then
+            Threshold := UserSetup.PNEffectiveHighValueThreshold(Threshold);
 
         if (Threshold > 0) and (Abs(ApprovalEntry."Amount (LCY)") >= Threshold) then
             Outbox."High Value" := true;

@@ -11,15 +11,12 @@ permissionset 50100 "PN Approval Admin"
     Assignable = true;
     Permissions =
         tabledata "PN Approval Integration Setup" = RIMD,
+        tabledata "User Setup" = RIM,
         tabledata "PN Approval Outbox" = RIMD,
-        tabledata "PN Approver Channel Identity" = RIMD,
         table "PN Approval Integration Setup" = X,
         table "PN Approval Outbox" = X,
-        table "PN Approver Channel Identity" = X,
         page "PN Approval Integration Setup" = X,
         page "PN Approval Outbox" = X,
-        page "PN Approver Channel Identities" = X,
-        page "PN Approver Channel Identity" = X,
         page "PN Approval Channel Setup" = X,
         page "PN Approval Diagnostics" = X,
         page "PN Approval Entries API" = X,
@@ -28,6 +25,8 @@ permissionset 50100 "PN Approval Admin"
         codeunit "PN Approval Dispatch Runner" = X,
         codeunit "PN Approval Http Client" = X,
         codeunit "PN Approval OAuth Mgt." = X,
+        codeunit "PN Approval Action Token" = X,
+        codeunit "PN Approval Email Sender" = X,
         codeunit "PN Approval Action Handler" = X;
 }
 
@@ -37,10 +36,9 @@ permissionset 50101 "PN Approval Service"
     Assignable = true;
     Permissions =
         tabledata "PN Approval Integration Setup" = R,
+        tabledata "User Setup" = RIM,
         tabledata "PN Approval Outbox" = RM,
-        tabledata "PN Approver Channel Identity" = R,
         table "PN Approval Outbox" = X,
-        table "PN Approver Channel Identity" = X,
         page "PN Approval Entries API" = X,
         codeunit "PN Approval Action Handler" = X,
         codeunit "PN Approval Dispatch Runner" = X;
