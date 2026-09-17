@@ -51,6 +51,19 @@ page 50106 "PN Approval Diagnostics"
     {
         area(Processing)
         {
+            action(TestApproveDirect)
+            {
+                ApplicationArea = All;
+                Caption = 'Test Approve (In Process)';
+                Image = Approve;
+                ToolTip = 'Calls the approval handler directly, in this session, bypassing Azure and OData entirely. Any error appears with a full call stack naming the object and line - detail that a 400 from the API strips out.';
+
+                trigger OnAction()
+                begin
+                    RunDirectApprove();
+                end;
+            }
+
             action(TestApprovalEmail)
             {
                 ApplicationArea = All;
@@ -494,5 +507,61 @@ page 50106 "PN Approval Diagnostics"
         end;
 
         Message(Builder.ToText());
+    end;
+
+    /// <summary>
+    /// Approves the most recent open entry by calling the handler directly.
+    ///
+    /// WHY THIS EXISTS
+    ///
+    /// When the handler throws, OData returns a 400 carrying the message and
+    /// nothing else - no object, no procedure, no line. An error like
+    /// "The value "" can't be evaluated into type Integer" is then almost
+    /// impossible to place, and the only way forward is guesswork.
+    ///
+    /// Run in-process, the same failure surfaces in the Business Central
+    /// client with a full AL call stack. One click, and the guessing stops.
+    ///
+    /// This really approves the invoice, so it names the document first and
+    /// asks.
+    /// </summary>
+    local procedure RunDirectApprove()
+    var
+        ApprovalEntry: Record "Approval Entry";
+        Outbox: Record "PN Approval Outbox";
+        Handler: Codeunit "PN Approval Action Handler";
+        ExpectedApprover: Code[50];
+        ExpectedAmount: Decimal;
+        ResultCode: Text;
+        ConfirmQst: Label 'This will really approve %1 for approver %2.\n\nContinue?', Comment = '%1 = document no., %2 = approver';
+        ResultMsg: Label 'Handler returned: %1\n\nIf that reads OK, the handler is fine and the fault is in the API layer.\nIf it threw, the call stack above names the object and line.', Comment = '%1 = result code';
+        NoneErr: Label 'No open approval entry to test with. Send an invoice for approval first.';
+    begin
+        ApprovalEntry.SetRange(Status, ApprovalEntry.Status::Open);
+        if not ApprovalEntry.FindLast() then
+            Error(NoneErr);
+
+        if not Confirm(ConfirmQst, false, ApprovalEntry."Document No.", ApprovalEntry."Approver ID") then
+            exit;
+
+        // The same snapshot the API page reads, so this exercises the real
+        // path rather than a simplified one.
+        Outbox.SetRange("Approval Entry No.", ApprovalEntry."Entry No.");
+        Outbox.SetRange("Event Type", Outbox."Event Type"::Requested);
+        if Outbox.FindLast() then begin
+            ExpectedApprover := Outbox."Approver User ID";
+            ExpectedAmount := Outbox."Amount (LCY)";
+        end;
+
+        ResultCode := Handler.Approve(
+            ApprovalEntry."Entry No.",
+            ExpectedApprover,
+            ExpectedAmount,
+            'Diagnostics',
+            'In-process test from the Approval Diagnostics page',
+            Format(CreateGuid(), 0, 4),
+            '');
+
+        Message(ResultMsg, ResultCode);
     end;
 }

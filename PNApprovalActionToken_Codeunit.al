@@ -52,6 +52,7 @@ codeunit 50106 "PN Approval Action Token"
     var
         TokenVersionTok: Label '1', Locked = true;
         SignatureHexLength: Integer;
+        IsoFormatErr: Label 'Could not read a timestamp while building an approval link. Expected an ISO 8601 value such as 2026-09-15T12:30:52Z but got "%1". This is a fault in PN Approval Action Token.', Comment = '%1 = the value received';
         NoSecretErr: Label 'No action token signing secret is stored. On the Approval Integration Setup page, enter the Action Token Secret - it must match ActionToken__SigningSecret on the Azure Function exactly.';
 
     trigger OnRun()
@@ -218,14 +219,27 @@ codeunit 50106 "PN Approval Action Token"
     begin
         Iso := Format(Value, 0, 9);
 
+        // Guarded, because a bare Evaluate on an unexpected string throws
+        // "The value "" can't be evaluated into type Integer" - an exception
+        // that surfaces through OData as a 400 naming no field, no procedure
+        // and no object. Whatever calls this deserves a message it can act on.
+        if StrLen(Iso) < 19 then
+            Error(IsoFormatErr, Iso);
+
         // "2026-09-15T12:30:52.437Z"
         //  1234 67 90 23 56 89
-        Evaluate(Years, CopyStr(Iso, 1, 4));
-        Evaluate(Months, CopyStr(Iso, 6, 2));
-        Evaluate(Days, CopyStr(Iso, 9, 2));
-        Evaluate(Hours, CopyStr(Iso, 12, 2));
-        Evaluate(Minutes, CopyStr(Iso, 15, 2));
-        Evaluate(Seconds, CopyStr(Iso, 18, 2));
+        if not Evaluate(Years, CopyStr(Iso, 1, 4)) then
+            Error(IsoFormatErr, Iso);
+        if not Evaluate(Months, CopyStr(Iso, 6, 2)) then
+            Error(IsoFormatErr, Iso);
+        if not Evaluate(Days, CopyStr(Iso, 9, 2)) then
+            Error(IsoFormatErr, Iso);
+        if not Evaluate(Hours, CopyStr(Iso, 12, 2)) then
+            Error(IsoFormatErr, Iso);
+        if not Evaluate(Minutes, CopyStr(Iso, 15, 2)) then
+            Error(IsoFormatErr, Iso);
+        if not Evaluate(Seconds, CopyStr(Iso, 18, 2)) then
+            Error(IsoFormatErr, Iso);
 
         // Date subtraction returns whole days and carries no time or zone, so
         // it is safe in a way DateTime subtraction is not.

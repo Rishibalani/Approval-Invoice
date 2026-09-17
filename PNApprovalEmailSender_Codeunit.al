@@ -198,10 +198,12 @@ codeunit 50107 "PN Approval Email Sender"
         if ApprovalEntry.Get(Outbox."Approval Entry No.") then begin
             Builder.Append(Row('Requested by', ResolveUserName(ApprovalEntry."Sender ID")));
             Builder.Append(Row('Submitted', FormatDateTime(ApprovalEntry."Date-Time Sent for Approval")));
-
-            if ApprovalEntry."Due Date" <> 0D then
-                Builder.Append(Row('Respond by', Format(ApprovalEntry."Due Date")));
         end;
+
+        // "Respond by" removed, matching the Teams card. It duplicated the
+        // invoice Due date closely enough to be read as the same thing, and an
+        // approver comparing two dates that mean different things is worse
+        // served than one shown a single date that matters.
 
         Builder.Append('</table></td></tr>');
 
@@ -750,18 +752,27 @@ codeunit 50107 "PN Approval Email Sender"
         exit(Name + ' (' + No + ')');
     end;
 
+    /// <summary>
+    /// mm/dd/yy, fixed, for every date on the card.
+    ///
+    /// Format(Value) with no format string renders in the SERVICE TIER's
+    /// locale, which is not the approver's and not necessarily the same as
+    /// Teams or WhatsApp. An invoice showing 03/09/26 in one channel and
+    /// 09/03/26 in another is the kind of discrepancy that makes somebody
+    /// distrust all three.
+    /// </summary>
     local procedure FormatDate(Value: Date): Text
     begin
         if Value = 0D then
             exit('');
-        exit(Format(Value));
+        exit(Format(Value, 0, '<Month,2>/<Day,2>/<Year,2>'));
     end;
 
     local procedure FormatDateTime(Value: DateTime): Text
     begin
         if Value = 0DT then
             exit('');
-        exit(Format(Value, 0, '<Day,2>/<Month,2>/<Year4> <Hours24,2>:<Minutes,2>'));
+        exit(Format(Value, 0, '<Month,2>/<Day,2>/<Year,2> <Hours24,2>:<Minutes,2>'));
     end;
 
     // ------------------------------------------------------------------

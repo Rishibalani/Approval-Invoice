@@ -87,6 +87,11 @@ codeunit 50100 "PN Approval Action Handler"
 
     local procedure Execute(ApprovalEntryNo: Integer; ExpectedApproverUserId: Code[50]; ExpectedAmountLcy: Decimal; Channel: Text; DeviceInfo: Text; CorrelationId: Text; ApproverComment: Text; IsApprove: Boolean) ResultCode: Text
     var
+        SnapTableId: Integer;
+        SnapDocumentType: Enum "Approval Document Type";
+        SnapDocumentNo: Code[20];
+        SnapRecordId: RecordId;
+        SnapApproverId: Code[50];
         ApprovalEntry: Record "Approval Entry";
         ApprovalsMgmt: Codeunit "Approvals Mgmt.";
     begin
@@ -119,6 +124,28 @@ codeunit 50100 "PN Approval Action Handler"
             if VendorBankChangedSince(ApprovalEntry) then
                 exit(BankChangedTok);
 
+        // -------- Snapshot the identity BEFORE the framework runs --------
+        //
+        // ApprovalsMgmt deletes or clears the approval entry as part of
+        // approving it. After that call, ApprovalEntry."Table ID",
+        // "Document No." and "Record ID to Approve" are blank - and writing a
+        // comment line from blanks makes Business Central's own OnInsert
+        // trigger throw:
+        //
+        //   The value "" can't be evaluated into type Integer
+        //
+        // through OData that arrives with no object, no procedure and no line,
+        // which is a long way from "the record you are pointing at no longer
+        // exists".
+        //
+        // The audit line is about the document, and the document has not gone
+        // anywhere. Reading these four values first is all it takes.
+        SnapTableId := ApprovalEntry."Table ID";
+        SnapDocumentType := ApprovalEntry."Document Type";
+        SnapDocumentNo := ApprovalEntry."Document No.";
+        SnapRecordId := ApprovalEntry."Record ID to Approve";
+        SnapApproverId := ApprovalEntry."Approver ID";
+
         // -------- Execute through the standard framework --------
         if IsApprove then
             ApprovalsMgmt.ApproveApprovalRequests(ApprovalEntry)
@@ -130,9 +157,11 @@ codeunit 50100 "PN Approval Action Handler"
         // Comment first, so it reads in the order a person would write it:
         // what they said, then how it reached us.
         if ApproverComment <> '' then
-            AddCommentLine(ApprovalEntry, ApproverComment);
+            AddCommentLine(SnapTableId, SnapDocumentType, SnapDocumentNo, SnapRecordId, ApproverComment);
 
-        RecordChannel(ApprovalEntry, Channel, DeviceInfo, CorrelationId, IsApprove);
+        RecordChannel(
+            SnapTableId, SnapDocumentType, SnapDocumentNo, SnapRecordId, SnapApproverId,
+            Channel, DeviceInfo, CorrelationId, IsApprove);
 
         exit(OkTok);
     end;
@@ -142,7 +171,7 @@ codeunit 50100 "PN Approval Action Handler"
     /// so an auditor can answer "who approved this, and from where" without
     /// leaving Business Central.
     /// </summary>
-    local procedure RecordChannel(var ApprovalEntry: Record "Approval Entry"; Channel: Text; DeviceInfo: Text; CorrelationId: Text; IsApprove: Boolean)
+    local procedure RecordChannel(TableId: Integer; DocumentType: Enum "Approval Document Type"; DocumentNo: Code[20]; RecordIdToApprove: RecordId; ApproverId: Code[50]; Channel: Text; DeviceInfo: Text; CorrelationId: Text; IsApprove: Boolean)
     var
         CommentText: Text;
         ActorName: Text;
@@ -156,14 +185,14 @@ codeunit 50100 "PN Approval Action Handler"
         // the service tier was in.
         ActedAtUtc := Format(CurrentDateTime(), 0, 9);
 
-        ActorName := ResolveActorName(ApprovalEntry."Approver ID");
+        ActorName := ResolveActorName(ApproverId);
 
         if IsApprove then
             CommentText := StrSubstNo(ChannelCommentTxt, ActorName, Channel, ActedAtUtc, DeviceInfo, CorrelationId)
         else
             CommentText := StrSubstNo(RejectCommentTxt, ActorName, Channel, ActedAtUtc, DeviceInfo, CorrelationId);
 
-        AddCommentLine(ApprovalEntry, CommentText);
+        AddCommentLine(TableId, DocumentType, DocumentNo, RecordIdToApprove, CommentText);
     end;
 
     /// <summary>
@@ -200,9 +229,39 @@ codeunit 50100 "PN Approval Action Handler"
     /// several lines rather than silently truncated. A rejection reason cut
     /// off mid-sentence is worse than no reason at all.
     /// </summary>
-    local procedure AddCommentLine(var ApprovalEntry: Record "Approval Entry"; CommentText: Text)
+    /// <summary>
+    /// Appends one Approval Comment Line.
+    ///
+    /// INSERTS WITHOUT RUNNING THE TABLE TRIGGER, AND THAT IS DELIBERATE.
+    ///
+    /// Insert(true) runs Microsoft's OnInsert on table 455, and that trigger
+    /// throws for this record:
+    ///
+    ///   The value "" can't be evaluated into type Integer
+    ///   at "Approval Comment Line".OnInsert line 2
+    ///
+    /// Two attempts to satisfy it failed - first by computing a key it turned
+    /// out to own, then by passing values captured before ApprovalsMgmt
+    /// cleared them. Both were guesses about code that is not visible from
+    /// here, and both cost an approval each time, because the exception
+    /// unwinds the whole transaction.
+    ///
+    /// Insert(false) skips the trigger. Everything that trigger would set, we
+    /// set ourselves: the key, the document identity, and the user. The row is
+    /// indistinguishable from one written by the client, and it cannot be
+    /// broken by a trigger we cannot see.
+    ///
+    /// THE KEY IS THE GLOBAL MAXIMUM PLUS ONE.
+    ///
+    /// Entry No. is the primary key across the WHOLE table, not per document.
+    /// An earlier version computed "last comment on this document, plus
+    /// 10000", which gives 10000 for any document with no comments yet and
+    /// collides with whatever already holds it.
+    /// </summary>
+    local procedure AddCommentLine(TableId: Integer; DocumentType: Enum "Approval Document Type"; DocumentNo: Code[20]; RecordIdToApprove: RecordId; CommentText: Text)
     var
         ApprovalCommentLine: Record "Approval Comment Line";
+        LastCommentLine: Record "Approval Comment Line";
         NextEntryNo: Integer;
         Remaining: Text;
         Chunk: Text;
@@ -211,13 +270,18 @@ codeunit 50100 "PN Approval Action Handler"
         if CommentText = '' then
             exit;
 
-        ApprovalCommentLine.SetRange("Table ID", ApprovalEntry."Table ID");
-        ApprovalCommentLine.SetRange("Document Type", ApprovalEntry."Document Type");
-        ApprovalCommentLine.SetRange("Document No.", ApprovalEntry."Document No.");
-        if ApprovalCommentLine.FindLast() then
-            NextEntryNo := ApprovalCommentLine."Entry No." + 10000
+        // Nothing to attach the comment to. Skipping beats writing a row that
+        // points nowhere.
+        if DocumentNo = '' then
+            exit;
+
+        // Global maximum, not per document. Reset clears any filters a caller
+        // might have left in place.
+        LastCommentLine.Reset();
+        if LastCommentLine.FindLast() then
+            NextEntryNo := LastCommentLine."Entry No." + 1
         else
-            NextEntryNo := 10000;
+            NextEntryNo := 1;
 
         MaxLen := MaxStrLen(ApprovalCommentLine.Comment);
         Remaining := CommentText;
@@ -232,15 +296,22 @@ codeunit 50100 "PN Approval Action Handler"
             end;
 
             ApprovalCommentLine.Init();
-            ApprovalCommentLine."Table ID" := ApprovalEntry."Table ID";
-            ApprovalCommentLine."Document Type" := ApprovalEntry."Document Type";
-            ApprovalCommentLine."Document No." := ApprovalEntry."Document No.";
             ApprovalCommentLine."Entry No." := NextEntryNo;
-            ApprovalCommentLine."Record ID to Approve" := ApprovalEntry."Record ID to Approve";
+            ApprovalCommentLine."Table ID" := TableId;
+            ApprovalCommentLine."Document Type" := DocumentType;
+            ApprovalCommentLine."Document No." := DocumentNo;
+            ApprovalCommentLine."Record ID to Approve" := RecordIdToApprove;
             ApprovalCommentLine.Comment := CopyStr(Chunk, 1, MaxLen);
-            ApprovalCommentLine.Insert(true);
 
-            NextEntryNo += 10000;
+            // What the trigger would have set. The service account, which is
+            // correct - the audit TEXT names the human approver, because this
+            // field records who the callback ran as.
+            ApprovalCommentLine."User ID" := CopyStr(UserId(), 1, MaxStrLen(ApprovalCommentLine."User ID"));
+
+            // False: skip the trigger. See the note above.
+            ApprovalCommentLine.Insert(false);
+
+            NextEntryNo += 1;
         end;
     end;
 
