@@ -103,6 +103,19 @@ codeunit 50102 "PN Approval Dispatch Runner"
 
     trigger OnRun()
     begin
+        // Notice decisions made anywhere before dispatching anything new.
+        //
+        // Business Central updates approval entries with ModifyAll, which does
+        // NOT raise OnAfterModifyEvent per record - so the modify subscriber
+        // never sees an approval happen, whether it came from the web client,
+        // a Teams card or this integration's own callback. No event, no outbox
+        // row, and the card in Teams sits there still offering buttons.
+        //
+        // Polling instead of subscribing. It costs one filtered read per cycle
+        // and it cannot be defeated by however Business Central chooses to
+        // write the record.
+        SweepDecidedEntries();
+
         DrainOutbox();
     end;
 
@@ -286,6 +299,65 @@ codeunit 50102 "PN Approval Dispatch Runner"
                 exit(Readiness::Skip);
             end;
         end;
+    end;
+
+    /// <summary>
+    /// Finds approvals that were decided without an outbox row being written,
+    /// and writes one.
+    ///
+    /// Looks only at requests this integration actually sent - if no card or
+    /// email went out, there is nothing to retire. Each decided entry gets one
+    /// status row, and the check for an existing row means running every
+    /// minute costs nothing after the first time.
+    /// </summary>
+    local procedure SweepDecidedEntries()
+    var
+        Outbox: Record "PN Approval Outbox";
+        ApprovalEntry: Record "Approval Entry";
+        Subscriber: Codeunit "PN Approval Event Subscriber";
+        EventType: Enum "PN Approval Event Type";
+    begin
+        Outbox.SetRange("Event Type", Outbox."Event Type"::Requested);
+        Outbox.SetRange(Status, Outbox.Status::Sent);
+
+        if not Outbox.FindSet() then
+            exit;
+
+        repeat
+            // Skipped when the entry is gone. Business Central removes
+            // approval entries in some configurations once a document is
+            // released, and capturing from a record that was never read would
+            // write a row of blanks - which is worse than no row, because it
+            // looks like data.
+            //
+            // A card for a deleted entry keeps its buttons, and they fail
+            // safely: Business Central reports the request no longer exists.
+            if ApprovalEntry.Get(Outbox."Approval Entry No.") then begin
+                case ApprovalEntry.Status of
+                    ApprovalEntry.Status::Approved:
+                        EventType := EventType::Approved;
+                    ApprovalEntry.Status::Rejected:
+                        EventType := EventType::Rejected;
+                    ApprovalEntry.Status::Canceled:
+                        EventType := EventType::Cancelled;
+                    else
+                        EventType := EventType::Requested;
+                end;
+
+                if EventType <> EventType::Requested then
+                    if not StatusRowExists(Outbox."Approval Entry No.", EventType) then
+                        Subscriber.CaptureApprovalEntry(ApprovalEntry, EventType);
+            end;
+        until Outbox.Next() = 0;
+    end;
+
+    local procedure StatusRowExists(ApprovalEntryNo: Integer; EventType: Enum "PN Approval Event Type"): Boolean
+    var
+        Existing: Record "PN Approval Outbox";
+    begin
+        Existing.SetRange("Approval Entry No.", ApprovalEntryNo);
+        Existing.SetRange("Event Type", EventType);
+        exit(not Existing.IsEmpty());
     end;
 
     /// <summary>
