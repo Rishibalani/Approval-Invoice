@@ -20,6 +20,7 @@ permissionset 50100 "PN Approval Admin"
         page "PN Approval Channel Setup" = X,
         page "PN Approval Diagnostics" = X,
         page "PN Approval Entries API" = X,
+        page "PN Approver Identity API" = X,
         codeunit "PN Approval Event Subscriber" = X,
         codeunit "PN Approval Payload Builder" = X,
         codeunit "PN Approval Dispatch Runner" = X,
@@ -40,6 +41,7 @@ permissionset 50101 "PN Approval Service"
         tabledata "PN Approval Outbox" = RM,
         table "PN Approval Outbox" = X,
         page "PN Approval Entries API" = X,
+        page "PN Approver Identity API" = X,
         codeunit "PN Approval Action Handler" = X,
         codeunit "PN Approval Dispatch Runner" = X;
 }

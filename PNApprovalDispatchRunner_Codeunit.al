@@ -42,7 +42,7 @@
 //
 //  RECOMMENDED JOB QUEUE ENTRY
 //    Object Type to Run          Codeunit
-//    Object ID to Run            50922
+//    Object ID to Run            50102
 //    Recurring                   Yes
 //    No. of Minutes between Runs 1
 //    Maximum No. of Attempts     3
@@ -102,21 +102,37 @@ codeunit 50102 "PN Approval Dispatch Runner"
     Permissions = tabledata "PN Approval Outbox" = rimd;
 
     trigger OnRun()
+    var
+        SweepError: Text;
     begin
-        // Notice decisions made anywhere before dispatching anything new.
+        // Dispatch FIRST. Housekeeping second.
         //
-        // Business Central updates approval entries with ModifyAll, which does
-        // NOT raise OnAfterModifyEvent per record - so the modify subscriber
-        // never sees an approval happen, whether it came from the web client,
-        // a Teams card or this integration's own callback. No event, no outbox
-        // row, and the card in Teams sits there still offering buttons.
+        // The order matters more than it looks. The sweep below is upkeep - it
+        // notices decisions made elsewhere so stale cards can be retired.
+        // Draining the outbox is the job somebody is waiting on.
         //
-        // Polling instead of subscribing. It costs one filtered read per cycle
-        // and it cannot be defeated by however Business Central chooses to
-        // write the record.
-        SweepDecidedEntries();
-
+        // Running the sweep first, and unguarded, meant one bad row anywhere in
+        // the table stopped every notification in the queue. The symptom was
+        // rows sitting Pending with an attempt count of zero and no error
+        // recorded against them, because the failure happened before any row
+        // was touched.
         DrainOutbox();
+
+        // Business Central updates approval entries with ModifyAll, which does
+        // not raise a modify event per record - so nothing sees an approval
+        // happen, whether it came from the web client, a card, or this
+        // integration's own callback. Polling is the only reliable answer.
+        //
+        // Wrapped so a failure here is reported and then ignored. It can cost
+        // a stale card; it must never cost a notification.
+        if not TrySweepDecidedEntries() then begin
+            SweepError := GetLastErrorText();
+            ClearLastError();
+
+            Session.LogMessage('PN0010', 'Approval status sweep failed: ' + SweepError,
+                Verbosity::Warning, DataClassification::SystemMetadata,
+                TelemetryScope::ExtensionPublisher, 'Category', 'PNApprovalDispatch');
+        end;
     end;
 
     var
@@ -200,6 +216,13 @@ codeunit 50102 "PN Approval Dispatch Runner"
         Outbox."Last Error" := '';
         Outbox.Modify(true);
 
+        // ---- Risk flags, re-checked against current policy --------------
+        //
+        // Before anything is sent, and before the payload is built, so both
+        // the email and the card agree. See the procedure for why this happens
+        // a second time.
+        RefreshRiskFlags(Outbox, Setup);
+
         // ---- Outlook, sent from here -----------------------------------
         //
         // Business Central composes and sends the approval email itself, so it
@@ -209,8 +232,7 @@ codeunit 50102 "PN Approval Dispatch Runner"
         //
         // AFTER the Last Error clear, not before. Placing it earlier meant any
         // failure reason it recorded was wiped by that clear one line later,
-        // which produced a silent failure with a blank diagnostic - the worst
-        // combination, because it looks like nothing was attempted.
+        // which produced a silent failure with a blank diagnostic.
         //
         // Deliberately not allowed to fail the row. If the email bounces but
         // Teams succeeds, the approver has still been reached, and the outbox
@@ -310,6 +332,12 @@ codeunit 50102 "PN Approval Dispatch Runner"
     /// status row, and the check for an existing row means running every
     /// minute costs nothing after the first time.
     /// </summary>
+    [TryFunction]
+    local procedure TrySweepDecidedEntries()
+    begin
+        SweepDecidedEntries();
+    end;
+
     local procedure SweepDecidedEntries()
     var
         Outbox: Record "PN Approval Outbox";
@@ -358,6 +386,80 @@ codeunit 50102 "PN Approval Dispatch Runner"
         Existing.SetRange("Approval Entry No.", ApprovalEntryNo);
         Existing.SetRange("Event Type", EventType);
         exit(not Existing.IsEmpty());
+    end;
+
+    /// <summary>
+    /// Re-evaluates the high-value and bank-change flags at dispatch time.
+    ///
+    /// WHY THIS HAPPENS TWICE
+    ///
+    /// The subscriber already set these at capture. That is deliberate and
+    /// stays - it records what was true when the request was raised, and it is
+    /// the only evaluation that happens if the row is dispatched immediately.
+    ///
+    /// But Business Central creates the WHOLE approval chain at submission,
+    /// all entries at once. A three-level chain produces three outbox rows in
+    /// the same second, and the third may not be sent for half an hour. Every
+    /// flag on it was stamped against settings as they stood before anybody
+    /// had approved anything.
+    ///
+    /// So an administrator who tightens a threshold mid-chain, or a vendor
+    /// whose bank details change between approvals, has no effect on anyone
+    /// already queued. That is the wrong way round: a threshold is a POLICY,
+    /// and policy should be whatever it says when the notification actually
+    /// goes out.
+    ///
+    /// FLAGS ONLY EVER TIGHTEN
+    ///
+    /// Set to true here, never back to false. Once something has been marked
+    /// as needing a signed-in review, a later loosening of the setting must
+    /// not quietly un-mark it - the reason it was flagged may no longer be
+    /// visible, and silently downgrading a control is not a thing to do by
+    /// accident.
+    ///
+    /// The AMOUNT stays frozen. That is a fact about the document, and the
+    /// approver is judged against what the request said. Only the policy
+    /// applied to it is re-read.
+    /// </summary>
+    local procedure RefreshRiskFlags(var Outbox: Record "PN Approval Outbox"; var Setup: Record "PN Approval Integration Setup")
+    var
+        ApprovalEntry: Record "Approval Entry";
+        UserSetup: Record "User Setup";
+        Subscriber: Codeunit "PN Approval Event Subscriber";
+        Threshold: Decimal;
+        Changed: Boolean;
+    begin
+        // Only a live request carries buttons, so only a live request needs
+        // its risk flags kept current.
+        if Outbox."Event Type" <> Outbox."Event Type"::Requested then
+            exit;
+
+        if not ApprovalEntry.Get(Outbox."Approval Entry No.") then
+            exit;
+
+        // ---- High value, against the threshold as it stands NOW ----
+        if not Outbox."High Value" then begin
+            Threshold := Setup."High Value Threshold (LCY)";
+
+            if UserSetup.Get(Outbox."Approver User ID") then
+                Threshold := UserSetup.PNEffectiveHighValueThreshold(Threshold);
+
+            if (Threshold > 0) and (Abs(Outbox."Amount (LCY)") >= Threshold) then begin
+                Outbox."High Value" := true;
+                Changed := true;
+            end;
+        end;
+
+        // ---- Bank details, against changes made since capture ----
+        if Setup."Block On Vendor Bank Change" then
+            if not Outbox."Bank Details Changed" then
+                if Subscriber.VendorBankDetailsChanged(ApprovalEntry) then begin
+                    Outbox."Bank Details Changed" := true;
+                    Changed := true;
+                end;
+
+        if Changed then
+            Outbox.Modify(true);
     end;
 
     /// <summary>

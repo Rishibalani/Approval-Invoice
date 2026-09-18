@@ -302,63 +302,26 @@ codeunit 50107 "PN Approval Email Sender"
             if Abs(Outbox."Amount (LCY)") >= Threshold then
                 exit(false);
 
-        // The approver's own limit. Business Central would refuse the approval
-        // anyway, through ApprovalsMgmt - so this check is purely cosmetic.
-        // Showing a button that errors the moment it is pressed looks like a
-        // bug, and an approver who hits that twice stops trusting the whole
-        // channel.
-        if not ApproverLimitAllows(UserSetup, Outbox) then
-            exit(false);
+        // THE APPROVER'S OWN LIMIT IS DELIBERATELY NOT CHECKED HERE.
+        //
+        // An earlier version refused when the amount exceeded the approver's
+        // purchase limit, on the assumption that Business Central would reject
+        // the approval anyway. It does not.
+        //
+        // With Approval Limits, Business Central uses each person's limit to
+        // BUILD THE CHAIN, not to decide whether they may act. An approver
+        // whose limit is 10 looking at an invoice of 60 is not over-reaching -
+        // they are step one of three, and their approval passes it upward.
+        //
+        // The effect of the old check was that Outlook hid the buttons while
+        // Teams showed them, for the same invoice and the same person. Same
+        // decision, two answers, and the one that looked more cautious was the
+        // one that was wrong.
 
         if not ApprovalEntry.Get(Outbox."Approval Entry No.") then
             exit(false);
 
         exit(ApprovalEntry.Status = ApprovalEntry.Status::Open);
-    end;
-
-    /// <summary>
-    /// Whether this approver's own limit covers the amount.
-    ///
-    /// User Setup holds SEPARATE limits for sales, purchase, expense and
-    /// requests, each with its own unlimited flag. Picking the wrong pair is
-    /// not a compile error and not a runtime error - it silently applies
-    /// somebody's sales limit to a purchase invoice, which is the kind of
-    /// wrong that survives testing.
-    ///
-    /// Purchase documents use the purchase pair; sales documents the sales
-    /// pair. Anything else is allowed through, because Business Central will
-    /// make the real decision regardless and guessing here helps nobody.
-    /// </summary>
-    local procedure ApproverLimitAllows(var UserSetup: Record "User Setup"; var Outbox: Record "PN Approval Outbox"): Boolean
-    var
-        Unlimited: Boolean;
-        Limit: Decimal;
-    begin
-        case Outbox."Table ID" of
-            Database::"Purchase Header":
-                begin
-                    Unlimited := UserSetup."Unlimited Purchase Approval";
-                    Limit := UserSetup."Purchase Amount Approval Limit";
-                end;
-            Database::"Sales Header":
-                begin
-                    Unlimited := UserSetup."Unlimited Sales Approval";
-                    Limit := UserSetup."Sales Amount Approval Limit";
-                end;
-            else
-                exit(true);
-        end;
-
-        if Unlimited then
-            exit(true);
-
-        // Zero means no limit configured, not a limit of zero. That is Business
-        // Central's own convention and reversing it here would block every
-        // approver who has not had a limit set.
-        if Limit = 0 then
-            exit(true);
-
-        exit(Abs(Outbox."Amount (LCY)") <= Limit);
     end;
 
     // ------------------------------------------------------------------

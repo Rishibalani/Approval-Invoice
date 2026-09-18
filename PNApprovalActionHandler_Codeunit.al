@@ -120,8 +120,24 @@ codeunit 50100 "PN Approval Action Handler"
                 exit(AmountChangedTok);
 
         // -------- Guard 4: vendor bank-change gate --------
+        //
+        // Compared against WHEN THE NOTIFICATION WAS SENT, not the document
+        // date. The difference is the whole point.
+        //
+        // Against the document date, this only catches a change made before
+        // the card went out - which the subscriber already flagged. It leaves
+        // the window that actually matters wide open: card sent, bank details
+        // changed a second later, approver presses Approve.
+        //
+        // That window is exactly how invoice-redirection fraud works. Get a
+        // legitimate invoice in front of an approver, then change where the
+        // money goes while it is in flight. The approver sees a familiar
+        // vendor and a familiar amount, and approves.
+        //
+        // Against the capture time, any change between the card being sent and
+        // the button being pressed refuses the approval.
         if IsApprove then
-            if VendorBankChangedSince(ApprovalEntry) then
+            if VendorBankChangedSince(ApprovalEntry, GetNotificationSentAt(ApprovalEntryNo)) then
                 exit(BankChangedTok);
 
         // -------- Snapshot the identity BEFORE the framework runs --------
@@ -193,6 +209,36 @@ codeunit 50100 "PN Approval Action Handler"
             CommentText := StrSubstNo(RejectCommentTxt, ActorName, Channel, ActedAtUtc, DeviceInfo, CorrelationId);
 
         AddCommentLine(TableId, DocumentType, DocumentNo, RecordIdToApprove, CommentText);
+    end;
+
+    /// <summary>
+    /// When the notification that carried this approval was sent.
+    ///
+    /// Read from the outbox row rather than passed in, because the caller is
+    /// an API page that has no reason to know about dispatch history - and a
+    /// guard that depends on its caller supplying the right timestamp is a
+    /// guard waiting to be bypassed.
+    ///
+    /// Returns 0DT when no notification was sent, which the caller treats as
+    /// "fall back to the document date".
+    /// </summary>
+    local procedure GetNotificationSentAt(ApprovalEntryNo: Integer): DateTime
+    var
+        Outbox: Record "PN Approval Outbox";
+        Empty: DateTime;
+    begin
+        Outbox.SetRange("Approval Entry No.", ApprovalEntryNo);
+        Outbox.SetRange("Event Type", Outbox."Event Type"::Requested);
+
+        if not Outbox.FindLast() then
+            exit(Empty);
+
+        // Sent At when it actually went out; Created At otherwise, which is
+        // the earlier of the two and therefore the safer one to compare from.
+        if Outbox."Sent At" <> 0DT then
+            exit(Outbox."Sent At");
+
+        exit(Outbox."Created At");
     end;
 
     /// <summary>
@@ -315,7 +361,7 @@ codeunit 50100 "PN Approval Action Handler"
         end;
     end;
 
-    local procedure VendorBankChangedSince(var ApprovalEntry: Record "Approval Entry"): Boolean
+    local procedure VendorBankChangedSince(var ApprovalEntry: Record "Approval Entry"; Since: DateTime): Boolean
     var
         Setup: Record "PN Approval Integration Setup";
         PurchaseHeader: Record "Purchase Header";
@@ -336,7 +382,15 @@ codeunit 50100 "PN Approval Action Handler"
 
         ChangeLogEntry.SetRange("Table No.", Database::Vendor);
         ChangeLogEntry.SetRange("Primary Key Field 1 Value", PurchaseHeader."Buy-from Vendor No.");
-        ChangeLogEntry.SetFilter("Date and Time", '>%1', CreateDateTime(PurchaseHeader."Document Date", 0T));
+        // Falls back to the document date when no notification time is known -
+        // an approval raised before this extension was installed, or actioned
+        // straight from the client. Wider than ideal, and better than a filter
+        // of "since the beginning of time" that flags every vendor whose
+        // details were ever edited.
+        if Since = 0DT then
+            Since := CreateDateTime(PurchaseHeader."Document Date", 0T);
+
+        ChangeLogEntry.SetFilter("Date and Time", '>%1', Since);
         ChangeLogEntry.SetFilter("Field No.", '%1|%2|%3', 288, 289, 290);
         exit(not ChangeLogEntry.IsEmpty());
     end;

@@ -239,7 +239,11 @@ codeunit 50101 "PN Approval Event Subscriber"
     //  Internal rather than local so the diagnostics page can backfill rows
     //  for approvals that were raised before this extension was published.
     // ------------------------------------------------------------------
-    internal procedure CaptureApprovalEntry(var ApprovalEntry: Record "Approval Entry"; EventType: Enum "PN Approval Event Type")
+    // Plain procedure, not internal. The codeunit is Access = Internal, which
+    // already confines this to the extension; marking the procedure internal
+    // as well makes it unreachable from the dispatch runner, which is
+    // Access = Public. See VendorBankDetailsChanged for the same note.
+    procedure CaptureApprovalEntry(var ApprovalEntry: Record "Approval Entry"; EventType: Enum "PN Approval Event Type")
     var
         Outbox: Record "PN Approval Outbox";
         Setup: Record "PN Approval Integration Setup";
@@ -304,7 +308,7 @@ codeunit 50101 "PN Approval Event Subscriber"
     /// row the subscriber itself would have rejected, and running it twice
     /// changes nothing.
     /// </summary>
-    internal procedure BackfillApprovalEntry(var ApprovalEntry: Record "Approval Entry")
+    procedure BackfillApprovalEntry(var ApprovalEntry: Record "Approval Entry")
     begin
         if ApprovalEntry.Status <> ApprovalEntry.Status::Open then
             exit;
@@ -324,7 +328,19 @@ codeunit 50101 "PN Approval Event Subscriber"
     //  VERIFY THE FIELD NUMBERS. 288/289/290 are placeholders and differ by
     //  localisation. Wrong numbers mean the fraud gate never fires.
     // ------------------------------------------------------------------
-    local procedure VendorBankDetailsChanged(var ApprovalEntry: Record "Approval Entry"): Boolean
+    /// <summary>
+    /// Callable from the dispatch runner so the bank check can be re-run at
+    /// send time without duplicating the Change Log query. One implementation,
+    /// two callers - a second copy would drift the moment a field number
+    /// changed.
+    ///
+    /// Declared plainly rather than as internal. The codeunit itself is
+    /// Access = Internal, which already keeps this inside the extension, and
+    /// marking the procedure internal as well made it unreachable from the
+    /// runner - which is Access = Public - with "inaccessible due to its
+    /// protection level". One restriction is enough.
+    /// </summary>
+    procedure VendorBankDetailsChanged(var ApprovalEntry: Record "Approval Entry"): Boolean
     var
         PurchaseHeader: Record "Purchase Header";
         ChangeLogEntry: Record "Change Log Entry";
