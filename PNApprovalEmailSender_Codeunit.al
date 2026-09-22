@@ -645,6 +645,7 @@ codeunit 50107 "PN Approval Email Sender"
              '<tr style="color:#666;">' +
              '<td style="padding:4px 0;border-bottom:1px solid #e1e1e1;">Description</td>' +
              '<td style="padding:4px 0;border-bottom:1px solid #e1e1e1;text-align:right;">Qty</td>' +
+             '<td style="padding:4px 0 4px 8px;border-bottom:1px solid #e1e1e1;">UoM</td>' +
              '<td style="padding:4px 0 4px 12px;border-bottom:1px solid #e1e1e1;text-align:right;">Amount</td>' +
              '</tr>');
     end;
@@ -653,13 +654,13 @@ codeunit 50107 "PN Approval Email Sender"
     var
         QtyText: Text;
     begin
+        // Quantity and unit of measure in separate columns (same as the Teams card).
         QtyText := Format(Quantity, 0, '<Precision,0:5><Standard Format,0>');
-        if UnitOfMeasure <> '' then
-            QtyText += ' ' + UnitOfMeasure;
 
         exit('<tr>' +
              '<td style="padding:4px 0;">' + Enc(Description) + '</td>' +
              '<td style="padding:4px 0;text-align:right;white-space:nowrap;">' + Enc(QtyText) + '</td>' +
+             '<td style="padding:4px 0 4px 8px;white-space:nowrap;">' + Enc(UnitOfMeasure) + '</td>' +
              '<td style="padding:4px 0 4px 12px;text-align:right;white-space:nowrap;">' +
              Enc(FormatMoney(LineAmount, CurrencyCode)) + '</td></tr>');
     end;
