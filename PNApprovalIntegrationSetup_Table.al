@@ -306,6 +306,133 @@ table 50102 "PN Approval Integration Setup"
             Caption = 'Verbose Logging';
             ToolTip = 'Stores the full request and response body on each outbox row. Useful while building, expensive and privacy-sensitive in production.';
         }
+
+        // ---------------------------------------------------------------
+        //  Timing, retry and advanced behaviour
+        //
+        //  Every one of these used to be a literal in code. InitValue is the
+        //  value that was hardcoded, so a new install behaves exactly as
+        //  before; existing setup rows are populated by the upgrade codeunit
+        //  (PN Approval Upgrade), because InitValue does not reach rows that
+        //  already exist. None of them has a code-level fallback any more - a
+        //  zero or blank value fails with an error naming the field.
+        // ---------------------------------------------------------------
+        field(90; "Created Hold Delay (Sec.)"; Integer)
+        {
+            Caption = 'Created Hold Delay (Seconds)';
+            DataClassification = SystemMetadata;
+            InitValue = 30;
+            MinValue = 1;
+        }
+        field(91; "Max Retry Delay (Sec.)"; Integer)
+        {
+            Caption = 'Max. Retry Delay (Seconds)';
+            DataClassification = SystemMetadata;
+            InitValue = 3600;
+            MinValue = 1;
+        }
+        field(92; "OAuth Authority URL"; Text[250])
+        {
+            Caption = 'OAuth Authority URL';
+            DataClassification = CustomerContent;
+            InitValue = 'https://login.microsoftonline.com';
+
+            trigger OnValidate()
+            begin
+                if "OAuth Authority URL" = '' then
+                    exit;
+                if LowerCase(CopyStr("OAuth Authority URL", 1, 8)) <> 'https://' then
+                    Error(HttpsOnlyErr);
+            end;
+        }
+        field(93; "Token Lifetime Fallback (Sec.)"; Integer)
+        {
+            Caption = 'Token Lifetime Fallback (Seconds)';
+            DataClassification = SystemMetadata;
+            InitValue = 3000;
+            MinValue = 60;
+        }
+        field(94; "Secret Expiry Warning (Days)"; Integer)
+        {
+            Caption = 'Secret Expiry Warning (Days)';
+            DataClassification = SystemMetadata;
+            InitValue = 30;
+            MinValue = 0;
+        }
+        field(95; "Email Scenario"; Enum "Email Scenario")
+        {
+            Caption = 'Email Scenario';
+            DataClassification = SystemMetadata;
+            InitValue = Notification;
+        }
+        field(96; "Amount Tolerance (LCY)"; Decimal)
+        {
+            Caption = 'Amount Change Tolerance (LCY)';
+            DataClassification = CustomerContent;
+            InitValue = 0.01;
+            MinValue = 0;
+            DecimalPlaces = 0 : 5;
+        }
+        field(97; "Bank Change Table No."; Integer)
+        {
+            Caption = 'Bank Change Table No.';
+            DataClassification = CustomerContent;
+            InitValue = 23;
+            MinValue = 0;
+            TableRelation = AllObjWithCaption."Object ID" where("Object Type" = const(Table));
+        }
+        field(98; "Bank Change Field Filter"; Text[250])
+        {
+            Caption = 'Bank Change Field No. Filter';
+            DataClassification = CustomerContent;
+            InitValue = '288|289|290';
+
+            trigger OnValidate()
+            var
+                ChangeLogEntry: Record "Change Log Entry";
+            begin
+                if "Bank Change Field Filter" = '' then
+                    exit;
+                // Applying the filter is the validation: an unparseable
+                // filter errors here, at setup time, instead of inside an
+                // approval transaction later.
+                ChangeLogEntry.SetFilter("Field No.", "Bank Change Field Filter");
+            end;
+        }
+        field(99; "Email Max Lines"; Integer)
+        {
+            Caption = 'Email Max. Lines';
+            DataClassification = SystemMetadata;
+            InitValue = 10;
+            MinValue = 1;
+        }
+        field(100; "Payload Max Lines"; Integer)
+        {
+            Caption = 'Payload Max. Lines';
+            DataClassification = SystemMetadata;
+            InitValue = 20;
+            MinValue = 1;
+        }
+        field(101; "Send Dev Tunnel Header"; Boolean)
+        {
+            Caption = 'Send Dev Tunnel Bypass Header';
+            DataClassification = SystemMetadata;
+            InitValue = true;
+        }
+        field(102; "Job Queue Minutes Between Runs"; Integer)
+        {
+            Caption = 'Job Queue Minutes Between Runs';
+            DataClassification = SystemMetadata;
+            InitValue = 1;
+            MinValue = 1;
+        }
+        field(103; "Job Queue Max Attempts"; Integer)
+        {
+            Caption = 'Job Queue Max. Attempts';
+            DataClassification = SystemMetadata;
+            InitValue = 3;
+            MinValue = 1;
+        }
     }
 
     keys
@@ -314,7 +441,7 @@ table 50102 "PN Approval Integration Setup"
     }
 
     var
-        HttpsOnlyErr: Label 'The dispatch endpoint must use HTTPS.';
+        HttpsOnlyErr: Label 'The URL must use HTTPS.';
         FunctionKeyTok: Label 'PN-APPROVAL-FUNCTION-KEY', Locked = true;
         SigningSecretTok: Label 'PN-APPROVAL-SIGNING-SECRET', Locked = true;
         ClientSecretTok: Label 'PN-APPROVAL-CLIENT-SECRET', Locked = true;
@@ -499,6 +626,14 @@ table 50102 "PN Approval Integration Setup"
         if GetSigningSecret() = '' then
             Error(NoSigningSecretErr);
 
+        // The Azure Function refuses traffic whose environment tag it does not
+        // recognise, so a blank tag is a guaranteed rejection.
+        if "Environment Tag" = '' then
+            Error(MissingConfigErr, FieldCaption("Environment Tag"));
+
+        CheckTimingFields();
+        CheckPolicyFields();
+
         case "Auth Mode" of
             "Auth Mode"::"Function Key":
                 CheckFunctionKey();
@@ -528,6 +663,177 @@ table 50102 "PN Approval Integration Setup"
             Error(NoOAuthFieldErr, 'Entra client secret');
         if "OAuth Scope" = '' then
             Error(NoOAuthFieldErr, 'OAuth Scope');
+        if "OAuth Authority URL" = '' then
+            Error(NoOAuthFieldErr, FieldCaption("OAuth Authority URL"));
+        RequirePositive("Token Lifetime Fallback (Sec.)", FieldCaption("Token Lifetime Fallback (Sec.)"));
+    end;
+
+    /// <summary>
+    /// The non-secret subset of TestReadyForDispatch: timing, sizing and
+    /// policy values. The dispatch runner calls this before claiming any row,
+    /// so a missing value stops the run with the field named instead of
+    /// leaving a row half-processed. Call GetSetup() first.
+    /// </summary>
+    procedure TestTimingAndPolicySetup()
+    begin
+        CheckTimingFields();
+        CheckPolicyFields();
+    end;
+
+    /// <summary>
+    /// Every timing and sizing value the dispatch path reads. Zero in any of
+    /// these used to be papered over by a literal in code; now it is a
+    /// configuration fault, reported here by name.
+    /// </summary>
+    local procedure CheckTimingFields()
+    begin
+        RequirePositive("Request Timeout (ms)", FieldCaption("Request Timeout (ms)"));
+        RequirePositive("Max Attempts", FieldCaption("Max Attempts"));
+        RequirePositive("Retry Base Delay (Sec.)", FieldCaption("Retry Base Delay (Sec.)"));
+        RequirePositive("Max Retry Delay (Sec.)", FieldCaption("Max Retry Delay (Sec.)"));
+        RequirePositive("Batch Size", FieldCaption("Batch Size"));
+        RequirePositive("Created Hold Delay (Sec.)", FieldCaption("Created Hold Delay (Sec.)"));
+        RequirePositive("Action Token TTL (Min.)", FieldCaption("Action Token TTL (Min.)"));
+        if "Include Document Lines" then
+            RequirePositive("Payload Max Lines", FieldCaption("Payload Max Lines"));
+        if "Outlook Channel Enabled" then
+            RequirePositive("Email Max Lines", FieldCaption("Email Max Lines"));
+    end;
+
+    local procedure CheckPolicyFields()
+    begin
+        if not "Block On Vendor Bank Change" then
+            exit;
+        RequirePositive("Bank Change Table No.", FieldCaption("Bank Change Table No."));
+        if "Bank Change Field Filter" = '' then
+            Error(MissingConfigErr, FieldCaption("Bank Change Field Filter"));
+    end;
+
+    local procedure RequirePositive(Value: Integer; FieldCaptionText: Text)
+    begin
+        if Value <= 0 then
+            Error(MissingConfigErr, FieldCaptionText);
+    end;
+
+    // ------------------------------------------------------------------
+    //  Install / upgrade support
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Fills the configuration fields that replaced hardcoded literals, on a
+    /// row that predates them. Values are taken from each field's InitValue
+    /// (via Init on a temporary record), which is the former hardcoded value -
+    /// so there is one source of truth and nothing is repeated here.
+    ///
+    /// Idempotent: "Created Hold Delay (Sec.)" has MinValue 1, so zero can
+    /// only mean the row has never been populated. A populated row, including
+    /// one an administrator has since tuned, is left untouched.
+    /// </summary>
+    procedure ApplyConfigDefaultsToExistingRow()
+    var
+        Defaults: Record "PN Approval Integration Setup" temporary;
+    begin
+        if not Get() then
+            exit;
+
+        Defaults.Init();
+
+        // Existing field, filled only if empty - payload builder used to send 30.
+        if "Action Token TTL (Min.)" <= 0 then
+            "Action Token TTL (Min.)" := Defaults."Action Token TTL (Min.)";
+
+        if "Created Hold Delay (Sec.)" = 0 then begin
+            "Created Hold Delay (Sec.)" := Defaults."Created Hold Delay (Sec.)";
+            "Max Retry Delay (Sec.)" := Defaults."Max Retry Delay (Sec.)";
+            "OAuth Authority URL" := Defaults."OAuth Authority URL";
+            "Token Lifetime Fallback (Sec.)" := Defaults."Token Lifetime Fallback (Sec.)";
+            "Secret Expiry Warning (Days)" := Defaults."Secret Expiry Warning (Days)";
+            "Email Scenario" := Defaults."Email Scenario";
+            "Amount Tolerance (LCY)" := Defaults."Amount Tolerance (LCY)";
+            "Bank Change Table No." := Defaults."Bank Change Table No.";
+            "Bank Change Field Filter" := Defaults."Bank Change Field Filter";
+            "Email Max Lines" := Defaults."Email Max Lines";
+            "Payload Max Lines" := Defaults."Payload Max Lines";
+            "Send Dev Tunnel Header" := Defaults."Send Dev Tunnel Header";
+            "Job Queue Minutes Between Runs" := Defaults."Job Queue Minutes Between Runs";
+            "Job Queue Max Attempts" := Defaults."Job Queue Max Attempts";
+        end;
+
+        Modify(false);
+    end;
+
+    procedure GetConfigFieldsUpgradeTag(): Code[250]
+    begin
+        exit(ConfigFieldsUpgradeTagTok);
+    end;
+
+    // ------------------------------------------------------------------
+    //  Required-value accessors
+    //
+    //  Each returns the configured value or fails with an error naming the
+    //  setup field. There is deliberately no default in code: a value that
+    //  silently falls back to a literal is a value nobody knows is wrong.
+    //  Call GetSetup() first; these do not reload the record.
+    // ------------------------------------------------------------------
+    procedure GetActionTokenTtlMinutes(): Integer
+    begin
+        RequirePositive("Action Token TTL (Min.)", FieldCaption("Action Token TTL (Min.)"));
+        exit("Action Token TTL (Min.)");
+    end;
+
+    procedure GetCreatedHoldDelaySec(): Integer
+    begin
+        RequirePositive("Created Hold Delay (Sec.)", FieldCaption("Created Hold Delay (Sec.)"));
+        exit("Created Hold Delay (Sec.)");
+    end;
+
+    procedure GetMaxRetryDelaySec(): Integer
+    begin
+        RequirePositive("Max Retry Delay (Sec.)", FieldCaption("Max Retry Delay (Sec.)"));
+        exit("Max Retry Delay (Sec.)");
+    end;
+
+    procedure GetTokenLifetimeFallbackSec(): Integer
+    begin
+        RequirePositive("Token Lifetime Fallback (Sec.)", FieldCaption("Token Lifetime Fallback (Sec.)"));
+        exit("Token Lifetime Fallback (Sec.)");
+    end;
+
+    procedure GetEmailMaxLines(): Integer
+    begin
+        RequirePositive("Email Max Lines", FieldCaption("Email Max Lines"));
+        exit("Email Max Lines");
+    end;
+
+    procedure GetPayloadMaxLines(): Integer
+    begin
+        RequirePositive("Payload Max Lines", FieldCaption("Payload Max Lines"));
+        exit("Payload Max Lines");
+    end;
+
+    procedure GetBankChangeTableNo(): Integer
+    begin
+        RequirePositive("Bank Change Table No.", FieldCaption("Bank Change Table No."));
+        exit("Bank Change Table No.");
+    end;
+
+    procedure GetBankChangeFieldFilter(): Text
+    begin
+        if "Bank Change Field Filter" = '' then
+            Error(MissingConfigErr, FieldCaption("Bank Change Field Filter"));
+        exit("Bank Change Field Filter");
+    end;
+
+    /// <summary>
+    /// The Entra token endpoint for a tenant, built from the configured
+    /// authority. Only the v2.0 path shape is fixed - that is the protocol,
+    /// not configuration.
+    /// </summary>
+    procedure GetOAuthTokenEndpoint(TenantIdText: Text): Text
+    begin
+        if "OAuth Authority URL" = '' then
+            Error(MissingConfigErr, FieldCaption("OAuth Authority URL"));
+        exit(DelChr("OAuth Authority URL", '>', '/') + StrSubstNo(TokenPathTok, TenantIdText));
     end;
 
     /// <summary>
@@ -620,4 +926,7 @@ table 50102 "PN Approval Integration Setup"
         NoSigningSecretErr: Label 'No HMAC signing secret is stored. On the Approval Integration Setup page, use Generate Signing Secret, then copy the value into the Azure Function setting Dispatch__SigningSecret.';
         NoFunctionKeyErr: Label 'No Azure Function key is stored. Use Set Function Key on the Approval Integration Setup page.';
         NoOAuthFieldErr: Label '%1 is required when the authentication mode uses Entra ID.', Comment = '%1 = field name';
+        MissingConfigErr: Label '%1 must have a value on the Approval Integration Setup page. There is no built-in default.', Comment = '%1 = field caption';
+        TokenPathTok: Label '/%1/oauth2/v2.0/token', Locked = true;
+        ConfigFieldsUpgradeTagTok: Label 'PN-APPROVAL-CONFIG-FIELDS-20260921', Locked = true;
 }

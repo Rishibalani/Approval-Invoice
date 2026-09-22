@@ -87,6 +87,7 @@ codeunit 50100 "PN Approval Action Handler"
 
     local procedure Execute(ApprovalEntryNo: Integer; ExpectedApproverUserId: Code[50]; ExpectedAmountLcy: Decimal; Channel: Text; DeviceInfo: Text; CorrelationId: Text; ApproverComment: Text; IsApprove: Boolean) ResultCode: Text
     var
+        Setup: Record "PN Approval Integration Setup";
         SnapTableId: Integer;
         SnapDocumentType: Enum "Approval Document Type";
         SnapDocumentNo: Code[20];
@@ -115,9 +116,13 @@ codeunit 50100 "PN Approval Action Handler"
 
         // -------- Guard 3: has the money moved since the card was sent? --------
         // A card showing 40,000 must not approve an invoice that is now 400,000.
-        if ExpectedAmountLcy <> 0 then
-            if Abs(ApprovalEntry."Amount (LCY)" - ExpectedAmountLcy) > 0.01 then
+        // The rounding tolerance is Amount Change Tolerance (LCY) on setup;
+        // zero there means an exact match is required.
+        if ExpectedAmountLcy <> 0 then begin
+            Setup.GetSetup();
+            if Abs(ApprovalEntry."Amount (LCY)" - ExpectedAmountLcy) > Setup."Amount Tolerance (LCY)" then
                 exit(AmountChangedTok);
+        end;
 
         // -------- Guard 4: vendor bank-change gate --------
         //
@@ -380,7 +385,7 @@ codeunit 50100 "PN Approval Action Handler"
         if PurchaseHeader."Buy-from Vendor No." = '' then
             exit(false);
 
-        ChangeLogEntry.SetRange("Table No.", Database::Vendor);
+        ChangeLogEntry.SetRange("Table No.", Setup.GetBankChangeTableNo());
         ChangeLogEntry.SetRange("Primary Key Field 1 Value", PurchaseHeader."Buy-from Vendor No.");
         // Falls back to the document date when no notification time is known -
         // an approval raised before this extension was installed, or actioned
@@ -391,7 +396,8 @@ codeunit 50100 "PN Approval Action Handler"
             Since := CreateDateTime(PurchaseHeader."Document Date", 0T);
 
         ChangeLogEntry.SetFilter("Date and Time", '>%1', Since);
-        ChangeLogEntry.SetFilter("Field No.", '%1|%2|%3', 288, 289, 290);
+        // Same setup fields as PN Approval Event Subscriber.VendorBankDetailsChanged.
+        ChangeLogEntry.SetFilter("Field No.", Setup.GetBankChangeFieldFilter());
         exit(not ChangeLogEntry.IsEmpty());
     end;
 

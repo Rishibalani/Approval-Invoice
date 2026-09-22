@@ -7,9 +7,12 @@
 //
 //  Why proactive refresh matters here: a token that expires between our check
 //  and the Function's validation produces a 401 that looks identical to a
-//  misconfiguration. The refresh skew (default 300 seconds, configurable on the
-//  setup page) makes that race impossible in practice, and it absorbs clock
-//  drift between the BC service tier and Azure.
+//  misconfiguration. The refresh skew (Token Refresh Skew on the setup page)
+//  makes that race impossible in practice, and it absorbs clock drift between
+//  the BC service tier and Azure.
+//
+//  The authority host comes from OAuth Authority URL on setup (sovereign
+//  clouds use a different host); only the v2.0 token path shape is fixed.
 //
 //  The token itself goes to Isolated Storage, not a table field. A bearer token
 //  is as good as a password for its lifetime.
@@ -19,7 +22,6 @@ codeunit 50104 "PN Approval OAuth Mgt."
     Access = Internal;
 
     var
-        TokenEndpointTok: Label 'https://login.microsoftonline.com/%1/oauth2/v2.0/token', Locked = true;
         TokenRequestFailedErr: Label 'Could not obtain an access token from Entra ID. %1 %2\\%3', Comment = '%1 = status, %2 = reason, %3 = body';
         NoTokenInResponseErr: Label 'Entra ID responded but the reply contained no access_token. Check that the scope is correct and that the application has been granted the app role on the Azure Function.';
         SecretMissingErr: Label 'The Entra client secret has not been stored. Use Set Client Secret on the Approval Integration Setup page.';
@@ -84,7 +86,7 @@ codeunit 50104 "PN Approval OAuth Mgt."
         ContentHeaders.Add('Content-Type', 'application/x-www-form-urlencoded');
 
         Request.Method := 'POST';
-        Request.SetRequestUri(StrSubstNo(TokenEndpointTok,
+        Request.SetRequestUri(Setup.GetOAuthTokenEndpoint(
             DelChr(Format(Setup."Entra Tenant ID", 0, 4), '=', '{}')));
         Request.Content := Content;
 
@@ -101,7 +103,7 @@ codeunit 50104 "PN Approval OAuth Mgt."
                 Response.ReasonPhrase(),
                 CopyStr(ResponseText, 1, 1000));
 
-        ParseTokenResponse(ResponseText, AccessToken, ExpiresIn);
+        ParseTokenResponse(ResponseText, AccessToken, ExpiresIn, Setup);
 
         if AccessToken = '' then
             Error(NoTokenInResponseErr);
@@ -109,7 +111,7 @@ codeunit 50104 "PN Approval OAuth Mgt."
         Setup.SetAccessToken(AccessToken, ExpiresIn);
     end;
 
-    local procedure ParseTokenResponse(ResponseText: Text; var AccessToken: Text; var ExpiresIn: Integer)
+    local procedure ParseTokenResponse(ResponseText: Text; var AccessToken: Text; var ExpiresIn: Integer; var Setup: Record "PN Approval Integration Setup")
     var
         Json: JsonObject;
         Token: JsonToken;
@@ -120,11 +122,12 @@ codeunit 50104 "PN Approval OAuth Mgt."
         if Json.Get('access_token', Token) then
             AccessToken := Token.AsValue().AsText();
 
-        // Entra normally returns 3599. Default conservatively if it is absent.
+        // Entra normally returns 3599. If it is absent, use the configured
+        // Token Lifetime Fallback rather than a number baked into code.
         if Json.Get('expires_in', Token) then
             ExpiresIn := Token.AsValue().AsInteger()
         else
-            ExpiresIn := 3000;
+            ExpiresIn := Setup.GetTokenLifetimeFallbackSec();
     end;
 
     // Minimal percent-encoding for the characters that actually appear in

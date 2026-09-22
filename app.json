@@ -2,7 +2,7 @@
   "id": "d572be37-9e80-4827-b34f-4e3f3b5105c7",
   "name": "PN Invoice Approval",
   "publisher": "PulseNet365",
-  "version": "1.0.0.2",
+  "version": "1.0.0.3",
   "brief": "Event-driven outbox that pushes Business Central invoice approval requests to an Azure Function for multi-channel delivery.",
   "description": "Detects native Approval Entry records for Purchase and Sales Invoices, writes them to a durable outbox, and dispatches them to a configurable Azure     Function endpoint from a Job Queue. Endpoint, keys, auth mode and thresholds are all configurable at runtime.",
   "privacyStatement": "https://alphavima.com/privacy-policy",

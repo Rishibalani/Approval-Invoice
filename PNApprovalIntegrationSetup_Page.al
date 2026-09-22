@@ -148,9 +148,29 @@ page 50104 "PN Approval Integration Setup"
                         ApplicationArea = All;
                         StyleExpr = SecretExpiryStyle;
                     }
+                    field("Secret Expiry Warning (Days)"; Rec."Secret Expiry Warning (Days)")
+                    {
+                        ApplicationArea = All;
+                        ToolTip = 'How many days before the Client Secret Expiry Date the date is highlighted as a warning. 0 highlights it only once it has passed.';
+
+                        trigger OnValidate()
+                        begin
+                            RefreshVisibility();
+                        end;
+                    }
                     field("OAuth Scope"; Rec."OAuth Scope") { ApplicationArea = All; }
+                    field("OAuth Authority URL"; Rec."OAuth Authority URL")
+                    {
+                        ApplicationArea = All;
+                        ToolTip = 'Entra ID authority host used for the client credentials token request, without the tenant or path, e.g. https://login.microsoftonline.com. Change it only for a sovereign cloud. The tenant ID and /oauth2/v2.0/token are appended automatically.';
+                    }
                     field("Token Expires At"; Rec."Token Expires At") { ApplicationArea = All; }
                     field("Token Refresh Skew (Sec.)"; Rec."Token Refresh Skew (Sec.)") { ApplicationArea = All; }
+                    field("Token Lifetime Fallback (Sec.)"; Rec."Token Lifetime Fallback (Sec.)")
+                    {
+                        ApplicationArea = All;
+                        ToolTip = 'Lifetime assumed for an access token when Entra ID does not return expires_in. Entra normally returns about 3599 seconds; keep this below that.';
+                    }
                 }
             }
 
@@ -206,8 +226,23 @@ page 50104 "PN Approval Integration Setup"
                     trigger OnValidate()
                     begin
                         if Rec."Block On Vendor Bank Change" then
-                            Message(ChangeLogReminderMsg);
+                            Message(ChangeLogReminderMsg, Rec."Bank Change Table No.", Rec."Bank Change Field Filter");
                     end;
+                }
+                field("Bank Change Table No."; Rec."Bank Change Table No.")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Table whose Change Log entries are checked for bank-detail changes. 23 is the Vendor table. The Change Log must be active for this table.';
+                }
+                field("Bank Change Field Filter"; Rec."Bank Change Field Filter")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Field numbers on that table that count as bank details, as a filter such as 288|289|290 (Bank Account No., Bank Branch No., IBAN). Field numbers differ by localisation - verify them. Used both when the notification is sent and when an approval arrives.';
+                }
+                field("Amount Tolerance (LCY)"; Rec."Amount Tolerance (LCY)")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'When an approval arrives from a channel, it is refused if the document amount (LCY) differs from the amount on the notification by more than this. Absorbs rounding only; 0 requires an exact match.';
                 }
             }
 
@@ -218,10 +253,56 @@ page 50104 "PN Approval Integration Setup"
                 field("Request Timeout (ms)"; Rec."Request Timeout (ms)") { ApplicationArea = All; }
                 field("Max Attempts"; Rec."Max Attempts") { ApplicationArea = All; }
                 field("Retry Base Delay (Sec.)"; Rec."Retry Base Delay (Sec.)") { ApplicationArea = All; }
+                field("Max Retry Delay (Sec.)"; Rec."Max Retry Delay (Sec.)")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Upper limit on the doubling retry delay, so a long outage does not push the next attempt far into the future.';
+                }
+                field("Created Hold Delay (Sec.)"; Rec."Created Hold Delay (Sec.)")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'While Business Central has not yet opened an approval entry (status Created), the outbox row is held and looked at again after this many seconds. Holding does not count as a failed attempt.';
+                }
                 field("Batch Size"; Rec."Batch Size") { ApplicationArea = All; }
+                field("Job Queue Minutes Between Runs"; Rec."Job Queue Minutes Between Runs")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Recurrence used when Create Job Queue Entry creates the dispatch job. An existing Job Queue Entry is not changed - edit it directly, or delete it and create it again.';
+                }
+                field("Job Queue Max Attempts"; Rec."Job Queue Max Attempts")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Maximum No. of Attempts to Run set on the dispatch Job Queue Entry when Create Job Queue Entry creates it. An existing entry is not changed.';
+                }
                 field("Log Retention (Days)"; Rec."Log Retention (Days)") { ApplicationArea = All; }
                 field("Alert Email Recipients"; Rec."Alert Email Recipients") { ApplicationArea = All; }
                 field("Verbose Logging"; Rec."Verbose Logging") { ApplicationArea = All; }
+            }
+
+            group(Advanced)
+            {
+                Caption = 'Advanced';
+
+                field("Email Scenario"; Rec."Email Scenario")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Email scenario used for approval emails and failure alerts. Assign an email account to this scenario in Email Scenario Assignment, otherwise sending fails.';
+                }
+                field("Email Max Lines"; Rec."Email Max Lines")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Maximum document lines listed in an approval email; the rest are summarised as a count. Keep equal to the Teams card cap so both channels show the same lines.';
+                }
+                field("Payload Max Lines"; Rec."Payload Max Lines")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Maximum document lines included in the payload sent to Azure when Include Document Lines is on.';
+                }
+                field("Send Dev Tunnel Header"; Rec."Send Dev Tunnel Header")
+                {
+                    ApplicationArea = All;
+                    ToolTip = 'Sends X-Tunnel-Skip-AntiPhishing-Page on every request so a Microsoft dev tunnel forwards it instead of returning an HTML warning page. Harmless against a real Azure Function App; can be switched off in production.';
+                }
             }
 
             group(Diagnostics)
@@ -375,7 +456,7 @@ page 50104 "PN Approval Integration Setup"
                     ApplicationArea = All;
                     Caption = 'Create Job Queue Entry';
                     Image = Job;
-                    ToolTip = 'Creates the recurring Job Queue Entry that drains the outbox every minute, if it does not already exist.';
+                    ToolTip = 'Creates the recurring Job Queue Entry that drains the outbox, using Job Queue Minutes Between Runs and Job Queue Max. Attempts, if it does not already exist.';
 
                     trigger OnAction()
                     var
@@ -485,7 +566,7 @@ page 50104 "PN Approval Integration Setup"
         JobQueueCreatedMsg: Label 'The Job Queue Entry is in place and set to Ready.';
         DispatchNowMsg: Label '%1 rows were dispatched.', Comment = '%1 = count';
         GeneratedSecretMsg: Label 'Copy this value into the Azure Function setting Dispatch__SigningSecret now. It will not be shown again.\\%1', Comment = '%1 = generated secret';
-        ChangeLogReminderMsg: Label 'This control depends on the Change Log. Switch on change logging for the Vendor table and the vendor bank account fields, otherwise the check will always pass and the gate will do nothing.';
+        ChangeLogReminderMsg: Label 'This control depends on the Change Log. Switch on change logging for table %1 and fields %2 (Bank Change Table No. and Bank Change Field No. Filter on this page), otherwise the check will always pass and the gate will do nothing.', Comment = '%1 = table no., %2 = field no. filter';
         StoreFailedErr: Label 'The value could not be written to Isolated Storage. Check that you have permission to modify this setup, and that you are in the intended company.';
         ClearSecretsQst: Label 'Remove the function key, signing secret and client secret from Isolated Storage?';
         SecretsClearedMsg: Label 'All stored secrets have been removed.';
@@ -640,7 +721,7 @@ page 50104 "PN Approval Integration Setup"
 
         SecretExpiryStyle := 'Standard';
         if Rec."Client Secret Expiry Date" <> 0D then
-            if Rec."Client Secret Expiry Date" <= CalcDate('<+30D>', Today()) then
+            if Rec."Client Secret Expiry Date" <= Today() + Rec."Secret Expiry Warning (Days)" then
                 SecretExpiryStyle := 'Unfavorable';
     end;
 

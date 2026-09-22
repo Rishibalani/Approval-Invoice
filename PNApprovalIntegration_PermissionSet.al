@@ -28,7 +28,9 @@ permissionset 50100 "PN Approval Admin"
         codeunit "PN Approval OAuth Mgt." = X,
         codeunit "PN Approval Action Token" = X,
         codeunit "PN Approval Email Sender" = X,
-        codeunit "PN Approval Action Handler" = X;
+        codeunit "PN Approval Action Handler" = X,
+        codeunit "PN Approval Upgrade" = X,
+        codeunit "PN Approval Install" = X;
 }
 
 permissionset 50101 "PN Approval Service"

@@ -194,6 +194,18 @@ page 50106 "PN Approval Diagnostics"
         Builder.AppendLine('  Include Sales Documents: ' + Format(Setup."Include Sales Documents"));
         Builder.AppendLine('  Min. Amount (LCY): ' + Format(Setup."Min. Amount (LCY)"));
         Builder.AppendLine('  High Value Threshold (LCY): ' + Format(Setup."High Value Threshold (LCY)"));
+        Builder.AppendLine('  Block On Vendor Bank Change: ' + Format(Setup."Block On Vendor Bank Change") +
+            '   (Change Log table ' + Format(Setup."Bank Change Table No.") +
+            ', fields ' + Setup."Bank Change Field Filter" + ')');
+
+        // Same checks the runner applies before claiming a row. None of these
+        // values has a default in code any more, so a blank one stops dispatch.
+        if TryTimingAndPolicySetup(Setup) then
+            Builder.AppendLine('  Timing, retry and policy settings: OK')
+        else begin
+            Builder.AppendLine('  *** Timing, retry and policy settings: ' + GetLastErrorText() + ' ***');
+            ClearLastError();
+        end;
         Builder.AppendLine('');
 
         // ---------------------------------------------------------------
@@ -380,6 +392,12 @@ page 50106 "PN Approval Diagnostics"
         DiagnosisText := Builder.ToText();
     end;
 
+    [TryFunction]
+    local procedure TryTimingAndPolicySetup(var Setup: Record "PN Approval Integration Setup")
+    begin
+        Setup.TestTimingAndPolicySetup();
+    end;
+
     /// <summary>
     /// Answers "why did no email arrive" in one click.
     ///
@@ -428,8 +446,8 @@ page 50106 "PN Approval Diagnostics"
         Builder.AppendLine('   Not checked here - step 6 sends a real email instead.');
         Builder.AppendLine('   If it fails, open Email Accounts and use Send Test Email,');
         Builder.AppendLine('   then check Email Scenario Assignment has an account against');
-        Builder.AppendLine('   the Notification scenario. This code sends on Notification,');
-        Builder.AppendLine('   not Default, and an unassigned scenario fails silently.');
+        Builder.AppendLine('   the ' + Format(Setup."Email Scenario") + ' scenario (Email Scenario on');
+        Builder.AppendLine('   Approval Integration Setup). An unassigned scenario fails silently.');
 
         // ---- 3. Action links ----
         Builder.AppendLine('');
@@ -443,6 +461,14 @@ page 50106 "PN Approval Diagnostics"
             Builder.AppendLine('   WARNING: No action token secret stored. Buttons cannot be built.')
         else
             Builder.AppendLine('   OK: action token secret is stored.');
+
+        if Setup."Action Token TTL (Min.)" <= 0 then
+            Builder.AppendLine('   WARNING: Action Link Lifetime (Minutes) is not set. Links cannot be built.')
+        else
+            Builder.AppendLine('   OK: links live for ' + Format(Setup."Action Token TTL (Min.)") + ' minutes.');
+
+        if Setup."Email Max Lines" <= 0 then
+            Builder.AppendLine('   WARNING: Email Max. Lines is not set. The email cannot be built.');
 
         // ---- 4. A real outbox row ----
         Builder.AppendLine('');
@@ -499,7 +525,7 @@ page 50106 "PN Approval Diagnostics"
             Builder.AppendLine('   FAILED: ' + FailureReason);
             Builder.AppendLine('');
             Builder.AppendLine('   Most likely causes, in order:');
-            Builder.AppendLine('   a) The Notification scenario has no account assigned.');
+            Builder.AppendLine('   a) The ' + Format(Setup."Email Scenario") + ' scenario has no account assigned.');
             Builder.AppendLine('      Search "Email Scenario Assignment".');
             Builder.AppendLine('   b) No email account is configured at all.');
             Builder.AppendLine('      Search "Email Accounts" and use Send Test Email.');

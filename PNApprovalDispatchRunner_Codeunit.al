@@ -40,12 +40,12 @@
 //  * Setup.Enabled is honoured here rather than in the subscriber, so pausing
 //    the integration buffers events instead of losing them.
 //
-//  RECOMMENDED JOB QUEUE ENTRY
+//  JOB QUEUE ENTRY (created by EnsureJobQueueEntry)
 //    Object Type to Run          Codeunit
 //    Object ID to Run            50102
 //    Recurring                   Yes
-//    No. of Minutes between Runs 1
-//    Maximum No. of Attempts     3
+//    No. of Minutes between Runs setup: Job Queue Minutes Between Runs
+//    Maximum No. of Attempts     setup: Job Queue Max. Attempts
 // =========================================================================
 // =========================================================================
 //  PN Approval Dispatch Runner
@@ -89,12 +89,12 @@
 //  * Setup.Enabled is honoured here rather than in the subscriber, so pausing
 //    the integration buffers events instead of losing them.
 //
-//  RECOMMENDED JOB QUEUE ENTRY
+//  JOB QUEUE ENTRY (created by EnsureJobQueueEntry)
 //    Object Type to Run          Codeunit
 //    Object ID to Run            50102
 //    Recurring                   Yes
-//    No. of Minutes between Runs 1
-//    Maximum No. of Attempts     3
+//    No. of Minutes between Runs setup: Job Queue Minutes Between Runs
+//    Maximum No. of Attempts     setup: Job Queue Max. Attempts
 // =========================================================================
 codeunit 50102 "PN Approval Dispatch Runner"
 {
@@ -137,6 +137,7 @@ codeunit 50102 "PN Approval Dispatch Runner"
 
     var
         AlertSubjectTxt: Label 'Approval dispatch failed - %1 %2', Comment = '%1 = document type, %2 = document no.';
+        JobQueueFieldErr: Label '%1 must have a value on the Approval Integration Setup page before the Job Queue Entry can be created.', Comment = '%1 = field caption';
 
     /// <summary>
     /// Main loop. Safe to call from the Job Queue, a page action, or a test.
@@ -152,6 +153,10 @@ codeunit 50102 "PN Approval Dispatch Runner"
             exit(0);
         if Setup."Dispatch Endpoint URL" = '' then
             exit(0);
+
+        // Fail the run, loudly and by field name, before any row is claimed.
+        // The values checked here have no defaults in code any more.
+        Setup.TestTimingAndPolicySetup();
 
         Outbox.SetCurrentKey(Status, "Next Attempt At");
         Outbox.SetFilter(Status, '%1|%2',
@@ -203,7 +208,8 @@ codeunit 50102 "PN Approval Dispatch Runner"
             // incremented - waiting for Business Central to open the entry is
             // not a failed delivery attempt, and counting it as one would burn
             // through Max Attempts before the row was ever eligible to send.
-            Outbox."Next Attempt At" := CurrentDateTime() + 30000;
+            // The wait is Created Hold Delay on setup; * 1000 is seconds to ms.
+            Outbox."Next Attempt At" := CurrentDateTime() + (Setup.GetCreatedHoldDelaySec() * 1000);
             Outbox."Last Error" := CopyStr(HoldReason, 1, MaxStrLen(Outbox."Last Error"));
             Outbox.Modify(true);
             Commit();
@@ -596,7 +602,7 @@ codeunit 50102 "PN Approval Dispatch Runner"
             Body,
             true);
 
-        Email.Send(EmailMessage, Enum::"Email Scenario"::Notification);
+        Email.Send(EmailMessage, Setup."Email Scenario");
     end;
 
     // ------------------------------------------------------------------
@@ -604,8 +610,18 @@ codeunit 50102 "PN Approval Dispatch Runner"
     // ------------------------------------------------------------------
     procedure EnsureJobQueueEntry()
     var
+        Setup: Record "PN Approval Integration Setup";
         JobQueueEntry: Record "Job Queue Entry";
     begin
+        // Recurrence and attempts come from setup. An entry that already
+        // exists is left alone, so changing these later needs the Job Queue
+        // Entry edited (or deleted and recreated from the setup page).
+        Setup.GetSetup();
+        if Setup."Job Queue Minutes Between Runs" <= 0 then
+            Error(JobQueueFieldErr, Setup.FieldCaption("Job Queue Minutes Between Runs"));
+        if Setup."Job Queue Max Attempts" <= 0 then
+            Error(JobQueueFieldErr, Setup.FieldCaption("Job Queue Max Attempts"));
+
         JobQueueEntry.SetRange("Object Type to Run", JobQueueEntry."Object Type to Run"::Codeunit);
         JobQueueEntry.SetRange("Object ID to Run", Codeunit::"PN Approval Dispatch Runner");
         if not JobQueueEntry.IsEmpty() then
@@ -618,7 +634,7 @@ codeunit 50102 "PN Approval Dispatch Runner"
         JobQueueEntry.Description := CopyStr('Dispatch approval notifications to Azure', 1, MaxStrLen(JobQueueEntry.Description));
         JobQueueEntry."Run in User Session" := false;
         JobQueueEntry."Recurring Job" := true;
-        JobQueueEntry."No. of Minutes between Runs" := 1;
+        JobQueueEntry."No. of Minutes between Runs" := Setup."Job Queue Minutes Between Runs";
         JobQueueEntry."Run on Mondays" := true;
         JobQueueEntry."Run on Tuesdays" := true;
         JobQueueEntry."Run on Wednesdays" := true;
@@ -626,7 +642,7 @@ codeunit 50102 "PN Approval Dispatch Runner"
         JobQueueEntry."Run on Fridays" := true;
         JobQueueEntry."Run on Saturdays" := true;
         JobQueueEntry."Run on Sundays" := true;
-        JobQueueEntry."Maximum No. of Attempts to Run" := 3;
+        JobQueueEntry."Maximum No. of Attempts to Run" := Setup."Job Queue Max Attempts";
         JobQueueEntry.Insert(true);
 
         JobQueueEntry.SetStatus(JobQueueEntry.Status::Ready);

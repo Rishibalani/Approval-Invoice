@@ -175,7 +175,7 @@ codeunit 50105 "PN Approval Payload Builder"
                         Doc.Add('totalLineCount', CountPurchaseLines(PurchaseHeader));
                         Doc.Add('deepLink', Setup.BuildDeepLink(Page::"Purchase Invoice", PurchaseHeader));
                         if Setup."Include Document Lines" then
-                            Doc.Add('lines', BuildPurchaseLines(PurchaseHeader));
+                            Doc.Add('lines', BuildPurchaseLines(PurchaseHeader, Setup.GetPayloadMaxLines()));
                     end;
                 end;
             Database::"Sales Header":
@@ -210,7 +210,7 @@ codeunit 50105 "PN Approval Payload Builder"
                         Doc.Add('totalLineCount', CountSalesLines(SalesHeader));
                         Doc.Add('deepLink', Setup.BuildDeepLink(Page::"Sales Invoice", SalesHeader));
                         if Setup."Include Document Lines" then
-                            Doc.Add('lines', BuildSalesLines(SalesHeader));
+                            Doc.Add('lines', BuildSalesLines(SalesHeader, Setup.GetPayloadMaxLines()));
                     end;
                 end;
         end;
@@ -218,7 +218,7 @@ codeunit 50105 "PN Approval Payload Builder"
         Doc.Add('documentFound', Found);
     end;
 
-    local procedure BuildPurchaseLines(var PurchaseHeader: Record "Purchase Header") Lines: JsonArray
+    local procedure BuildPurchaseLines(var PurchaseHeader: Record "Purchase Header"; MaxLines: Integer) Lines: JsonArray
     var
         PurchaseLine: Record "Purchase Line";
         Line: JsonObject;
@@ -236,10 +236,10 @@ codeunit 50105 "PN Approval Payload Builder"
                 Line.Add('unitCost', PurchaseLine."Direct Unit Cost");
                 Line.Add('lineAmount', PurchaseLine."Line Amount");
                 Lines.Add(Line);
-            until (PurchaseLine.Next() = 0) or (Lines.Count() >= 20);
+            until (PurchaseLine.Next() = 0) or (Lines.Count() >= MaxLines);
     end;
 
-    local procedure BuildSalesLines(var SalesHeader: Record "Sales Header") Lines: JsonArray
+    local procedure BuildSalesLines(var SalesHeader: Record "Sales Header"; MaxLines: Integer) Lines: JsonArray
     var
         SalesLine: Record "Sales Line";
         Line: JsonObject;
@@ -257,7 +257,7 @@ codeunit 50105 "PN Approval Payload Builder"
                 Line.Add('unitPrice', SalesLine."Unit Price");
                 Line.Add('lineAmount', SalesLine."Line Amount");
                 Lines.Add(Line);
-            until (SalesLine.Next() = 0) or (Lines.Count() >= 20);
+            until (SalesLine.Next() = 0) or (Lines.Count() >= MaxLines);
     end;
 
     // ------------------------------------------------------------------
@@ -315,7 +315,11 @@ codeunit 50105 "PN Approval Payload Builder"
         end;
 
         Approver.Add('suspended', IsSuspended);
-        Approver.Add('fallbackChannel', Format(Setup."Global Fallback Channel"));
+        // The enum NAME (Outlook), not Format(), which returns the translated
+        // caption ("Microsoft Outlook") that Azure's Enum.TryParse rejects.
+        Approver.Add('fallbackChannel',
+            Setup."Global Fallback Channel".Names().Get(
+                Setup."Global Fallback Channel".Ordinals().IndexOf(Setup."Global Fallback Channel".AsInteger())));
 
         // ---------------------------------------------------------------
         //  Channels come from the GLOBAL toggles, never from this approver,
@@ -372,7 +376,9 @@ codeunit 50105 "PN Approval Payload Builder"
         Policy.Add('suppressionReasons', Reasons);
         Policy.Add('highValue', Outbox."High Value");
         Policy.Add('bankDetailsChanged', Outbox."Bank Details Changed");
-        Policy.Add('actionTokenTtlMinutes', 30);
+        // From setup, never a literal: the TTL the card advertises must be the
+        // TTL the token was actually minted with.
+        Policy.Add('actionTokenTtlMinutes', Setup.GetActionTokenTtlMinutes());
         Policy.Add('requiresSignedInApproval', not CanApproveInChannel);
     end;
 
@@ -588,7 +594,8 @@ codeunit 50105 "PN Approval Payload Builder"
 
     /// <summary>
     /// The TRUE line count, which is not the same as the number of lines on
-    /// the card - the card caps at ten so it stays under the Teams size limit.
+    /// the card - the card applies its own cap so it stays under the Teams size
+    /// limit, and the payload is capped by Payload Max Lines on setup.
     /// The difference is what lets it say "+4 more".
     /// </summary>
     local procedure CountPurchaseLines(var PurchaseHeader: Record "Purchase Header"): Integer

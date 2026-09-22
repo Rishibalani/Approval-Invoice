@@ -83,7 +83,8 @@ codeunit 50106 "PN Approval Action Token"
         Nonce := LowerCase(DelChr(Format(CreateGuid(), 0, 4), '=', '{}-'));
         Nonce := CopyStr(Nonce, 1, 16);
 
-        ExpiryUnix := ToUnixSeconds(CurrentDateTime() + (Setup."Action Token TTL (Min.)" * 60 * 1000));
+        // Action Link Lifetime from setup; * 60 * 1000 is minutes to ms.
+        ExpiryUnix := ToUnixSeconds(CurrentDateTime() + (Setup.GetActionTokenTtlMinutes() * 60 * 1000));
 
         if IsApprove then
             ActionChar := 'A'
@@ -132,7 +133,7 @@ codeunit 50106 "PN Approval Action Token"
     /// characters.
     ///
     /// Truncating to 128 bits is deliberate and safe here: forging one needs
-    /// 2^128 work, the token expires in half an hour regardless, and the nonce
+    /// 2^128 work, the token expires after Action Link Lifetime regardless, and the nonce
     /// store means even a valid token works once. The reason for truncating at
     /// all is WhatsApp, where a quick-reply payload is capped at 256
     /// characters - a full-length signature plus the payload would not fit.

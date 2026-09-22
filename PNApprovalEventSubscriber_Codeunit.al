@@ -119,8 +119,9 @@
 //  alternative in the approval framework. It also survives Microsoft changing
 //  ApprovalsMgmt internals between releases.
 //
-//  Cost: up to one Job Queue cycle of latency. With a one-minute recurrence
-//  that is not worth optimising away.
+//  Cost: up to one Job Queue cycle of latency. With the default one-minute
+//  recurrence (Job Queue Minutes Between Runs on setup) that is not worth
+//  optimising away.
 //
 //  THE RULE IN THIS FILE: no HTTP, no long-running work, no Commit. This code
 //  runs inside the user's transaction. It inserts a row and gets out.
@@ -321,12 +322,14 @@ codeunit 50101 "PN Approval Event Subscriber"
     // ------------------------------------------------------------------
     //  Vendor bank-change gate
     //
-    //  PREREQUISITE: Change Log must be active for table 23 (Vendor) with the
-    //  bank fields selected. Without it this always returns false and the
-    //  control silently does nothing.
+    //  PREREQUISITE: Change Log must be active for the table in Bank Change
+    //  Table No. (default 23, Vendor) with the fields in Bank Change Field No.
+    //  Filter selected. Without it this always returns false and the control
+    //  silently does nothing.
     //
-    //  VERIFY THE FIELD NUMBERS. 288/289/290 are placeholders and differ by
-    //  localisation. Wrong numbers mean the fraud gate never fires.
+    //  VERIFY THE FIELD NUMBERS on the setup page. The defaults 288|289|290
+    //  (Bank Account No., Bank Branch No., IBAN) differ by localisation.
+    //  Wrong numbers mean the fraud gate never fires.
     // ------------------------------------------------------------------
     /// <summary>
     /// Callable from the dispatch runner so the bank check can be re-run at
@@ -342,6 +345,7 @@ codeunit 50101 "PN Approval Event Subscriber"
     /// </summary>
     procedure VendorBankDetailsChanged(var ApprovalEntry: Record "Approval Entry"): Boolean
     var
+        Setup: Record "PN Approval Integration Setup";
         PurchaseHeader: Record "Purchase Header";
         ChangeLogEntry: Record "Change Log Entry";
         RecRef: RecordRef;
@@ -356,13 +360,29 @@ codeunit 50101 "PN Approval Event Subscriber"
         if PurchaseHeader."Buy-from Vendor No." = '' then
             exit(false);
 
-        ChangeLogEntry.SetRange("Table No.", Database::Vendor);
+        // Table and field numbers come from setup, shared with the action
+        // handler so the capture-time and approve-time checks cannot drift.
+        Setup.GetSetup();
+        ChangeLogEntry.SetRange("Table No.", Setup.GetBankChangeTableNo());
         ChangeLogEntry.SetRange("Primary Key Field 1 Value", PurchaseHeader."Buy-from Vendor No.");
         ChangeLogEntry.SetFilter("Date and Time", '>%1', CreateDateTime(PurchaseHeader."Document Date", 0T));
-        ChangeLogEntry.SetFilter("Field No.", '%1|%2|%3',
-            288,   // Bank Account No.
-            289,   // Bank Branch No.
-            290);  // IBAN - confirm against your localisation
+        ChangeLogEntry.SetFilter("Field No.", Setup.GetBankChangeFieldFilter());
         exit(not ChangeLogEntry.IsEmpty());
+    end;
+
+    // ------------------------------------------------------------------
+    //  Upgrade tag registration
+    //
+    //  Registers the per-company upgrade tag used by PN Approval Upgrade and
+    //  PN Approval Install, so a company created after this version is
+    //  installed is stamped as already upgraded. Lives here, in a normal
+    //  codeunit, rather than in the Upgrade-subtype codeunit.
+    // ------------------------------------------------------------------
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Upgrade Tag", 'OnGetPerCompanyUpgradeTags', '', false, false)]
+    local procedure RegisterPerCompanyUpgradeTags(var PerCompanyUpgradeTags: List of [Code[250]])
+    var
+        Setup: Record "PN Approval Integration Setup";
+    begin
+        PerCompanyUpgradeTags.Add(Setup.GetConfigFieldsUpgradeTag());
     end;
 }

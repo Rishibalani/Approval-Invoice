@@ -99,10 +99,11 @@ codeunit 50107 "PN Approval Email Sender"
 
         EmailMessage.Create(Recipients, Subject, Body, true);
 
-        // The Notification scenario, not Default. It lets an administrator
-        // point approval mail at a different account from, say, posted sales
-        // invoices, without touching this code.
-        exit(Email.Send(EmailMessage, Enum::"Email Scenario"::Notification));
+        // The scenario comes from Email Scenario on setup (Notification by
+        // default, not Default). It lets an administrator point approval mail
+        // at a different account from, say, posted sales invoices, without
+        // touching this code.
+        exit(Email.Send(EmailMessage, Setup."Email Scenario"));
     end;
 
     // ------------------------------------------------------------------
@@ -208,7 +209,7 @@ codeunit 50107 "PN Approval Email Sender"
         Builder.Append('</table></td></tr>');
 
         // ---- Lines ----
-        Builder.Append(BuildLinesTable(Outbox));
+        Builder.Append(BuildLinesTable(Outbox, Setup.GetEmailMaxLines()));
 
         // ---- Chain position ----
         //
@@ -252,7 +253,7 @@ codeunit 50107 "PN Approval Email Sender"
 
         if CanActInChannel then begin
             Builder.Append('<tr><td style="padding-top:24px;color:#999;font-size:12px;">');
-            Builder.Append('Approval buttons expire ' + Format(Setup."Action Token TTL (Min.)") +
+            Builder.Append('Approval buttons expire ' + Format(Setup.GetActionTokenTtlMinutes()) +
                 ' minutes after this was sent. After that, please use Business Central.');
             Builder.Append('</td></tr>');
         end;
@@ -551,16 +552,16 @@ codeunit 50107 "PN Approval Email Sender"
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// The first ten lines, with a count of any remainder.
+    /// The first Email Max Lines lines (setup), with a count of any remainder.
     ///
-    /// Ten is the cap the Teams card uses, and matching it keeps the channels
-    /// honest - an approver who sees eight lines in Teams and twelve in email
+    /// The default of ten is the cap the Teams card uses, and matching it keeps
+    /// the channels honest - an approver who sees eight lines in Teams and twelve in email
     /// has no idea which to trust.
     ///
     /// Blank and comment lines are excluded. They carry no amount and pad the
     /// list with rows an approver has to skip past.
     /// </summary>
-    local procedure BuildLinesTable(var Outbox: Record "PN Approval Outbox") Html: Text
+    local procedure BuildLinesTable(var Outbox: Record "PN Approval Outbox"; MaxLines: Integer) Html: Text
     var
         PurchaseHeader: Record "Purchase Header";
         PurchaseLine: Record "Purchase Line";
@@ -569,13 +570,12 @@ codeunit 50107 "PN Approval Email Sender"
         Builder: TextBuilder;
         Shown: Integer;
         Total: Integer;
-        MaxLines: Integer;
         CurrencyCode: Code[10];
     begin
-        // Ten, matching the Teams card. Matching matters more than the number:
-        // an approver who sees eight lines in Teams and twelve in email has no
-        // idea which to trust.
-        MaxLines := 10;
+        // MaxLines is Email Max Lines on setup; keep it equal to the Teams
+        // card cap. Matching matters more than the number: an approver who
+        // sees eight lines in Teams and twelve in email has no idea which to
+        // trust.
         CurrencyCode := Outbox."Currency Code";
 
         if GetPurchase(Outbox, PurchaseHeader) then begin

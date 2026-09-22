@@ -39,6 +39,21 @@ codeunit 50103 "PN Approval Http Client"
         LastResponseBody: Text;
         ConnectErr: Label 'Could not reach %1.\\Business Central received no HTTP response at all, so the request never arrived. In order of likelihood:\1. The Azure Function is not running - check that func start is still active.\2. The dev tunnel URL has rotated - tunnel URLs change on restart unless the tunnel is persistent.\3. The tunnel is not public - open the URL in a private browser window; a Microsoft sign-in page means it is still private.\4. Allow HttpClient Requests is off for this extension in Extension Management.', Comment = '%1 = url';
         HttpErr: Label 'The dispatch endpoint returned %1 %2. %3', Comment = '%1 = status, %2 = reason, %3 = body';
+        // Header NAMES are the BC -> Azure contract and stay fixed. Values
+        // that are configuration come from setup.
+        TimestampHeaderTok: Label 'x-pn-timestamp', Locked = true;
+        NonceHeaderTok: Label 'x-pn-nonce', Locked = true;
+        SignatureHeaderTok: Label 'x-pn-signature', Locked = true;
+        IdempotencyHeaderTok: Label 'x-pn-idempotency-key', Locked = true;
+        CorrelationHeaderTok: Label 'x-pn-correlation-id', Locked = true;
+        AttemptHeaderTok: Label 'x-pn-attempt', Locked = true;
+        EnvironmentHeaderTok: Label 'x-pn-environment', Locked = true;
+        TenantHeaderTok: Label 'x-pn-tenant-id', Locked = true;
+        FunctionKeyHeaderTok: Label 'x-functions-key', Locked = true;
+        // Microsoft dev tunnels protocol: name and value are defined by the
+        // tunnel service, not by us. Whether to send it is a setup toggle.
+        DevTunnelHeaderTok: Label 'X-Tunnel-Skip-AntiPhishing-Page', Locked = true;
+        DevTunnelHeaderValueTok: Label 'true', Locked = true;
         NoSigningSecretForSignErr: Label 'No HMAC signing secret is available, so the payload cannot be signed. Open Approval Integration Setup and enter the Signing Secret - it must match Dispatch__SigningSecret on the Azure Function exactly.';
 
     /// <summary>
@@ -89,21 +104,22 @@ codeunit 50103 "PN Approval Http Client"
         Request.GetHeaders(RequestHeaders);
         AddAuthHeaders(RequestHeaders, Setup);
 
-        RequestHeaders.Add('x-pn-timestamp', Timestamp);
-        RequestHeaders.Add('x-pn-nonce', Nonce);
-        RequestHeaders.Add('x-pn-signature', Sign(Timestamp, Nonce, PayloadText, Setup.GetSigningSecret()));
-        RequestHeaders.Add('x-pn-idempotency-key', DelChr(Format(Outbox."Idempotency Key", 0, 4), '=', '{}'));
-        RequestHeaders.Add('x-pn-correlation-id', DelChr(Format(Outbox."Correlation ID", 0, 4), '=', '{}'));
-        RequestHeaders.Add('x-pn-attempt', Format(Outbox."Attempt Count" + 1));
-        RequestHeaders.Add('x-pn-environment', Setup."Environment Tag");
-        RequestHeaders.Add('x-pn-tenant-id', Format(Database.TenantId()));
+        RequestHeaders.Add(TimestampHeaderTok, Timestamp);
+        RequestHeaders.Add(NonceHeaderTok, Nonce);
+        RequestHeaders.Add(SignatureHeaderTok, Sign(Timestamp, Nonce, PayloadText, Setup.GetSigningSecret()));
+        RequestHeaders.Add(IdempotencyHeaderTok, DelChr(Format(Outbox."Idempotency Key", 0, 4), '=', '{}'));
+        RequestHeaders.Add(CorrelationHeaderTok, DelChr(Format(Outbox."Correlation ID", 0, 4), '=', '{}'));
+        RequestHeaders.Add(AttemptHeaderTok, Format(Outbox."Attempt Count" + 1));
+        RequestHeaders.Add(EnvironmentHeaderTok, Setup."Environment Tag");
+        RequestHeaders.Add(TenantHeaderTok, Format(Database.TenantId()));
         RequestHeaders.Add('Accept', 'application/json');
 
         // Dev tunnels intercept requests that lack this header and return an
         // HTML anti-phishing interstitial instead of forwarding to the local
         // port. Harmless against a real Azure Function App, essential against
-        // a tunnel, so it is sent unconditionally.
-        RequestHeaders.Add('X-Tunnel-Skip-AntiPhishing-Page', 'true');
+        // a tunnel. Controlled by Send Dev Tunnel Bypass Header on setup
+        // (on by default, matching the previous unconditional behaviour).
+        AddDevTunnelHeader(RequestHeaders, Setup);
 
         Client.Timeout := Setup."Request Timeout (ms)";
 
@@ -147,8 +163,8 @@ codeunit 50103 "PN Approval Http Client"
         Request.SetRequestUri(Url);
         Request.GetHeaders(RequestHeaders);
         AddAuthHeaders(RequestHeaders, Setup);
-        RequestHeaders.Add('x-pn-environment', Setup."Environment Tag");
-        RequestHeaders.Add('X-Tunnel-Skip-AntiPhishing-Page', 'true');
+        RequestHeaders.Add(EnvironmentHeaderTok, Setup."Environment Tag");
+        AddDevTunnelHeader(RequestHeaders, Setup);
 
         Client.Timeout := Setup."Request Timeout (ms)";
 
@@ -162,6 +178,12 @@ codeunit 50103 "PN Approval Http Client"
             Error(HttpErr, LastHttpStatus, Response.ReasonPhrase(), CopyStr(LastResponseBody, 1, 500));
     end;
 
+    local procedure AddDevTunnelHeader(var RequestHeaders: HttpHeaders; var Setup: Record "PN Approval Integration Setup")
+    begin
+        if Setup."Send Dev Tunnel Header" then
+            RequestHeaders.Add(DevTunnelHeaderTok, DevTunnelHeaderValueTok);
+    end;
+
     local procedure AddAuthHeaders(var RequestHeaders: HttpHeaders; var Setup: Record "PN Approval Integration Setup")
     var
         OAuthMgt: Codeunit "PN Approval OAuth Mgt.";
@@ -172,7 +194,7 @@ codeunit 50103 "PN Approval Http Client"
                 begin
                     FunctionKey := Setup.GetFunctionKey();
                     if FunctionKey <> '' then
-                        RequestHeaders.Add('x-functions-key', FunctionKey);
+                        RequestHeaders.Add(FunctionKeyHeaderTok, FunctionKey);
                 end;
             Setup."Auth Mode"::"OAuth2 Client Credentials":
                 RequestHeaders.Add('Authorization', 'Bearer ' + OAuthMgt.GetAccessToken());
@@ -180,7 +202,7 @@ codeunit 50103 "PN Approval Http Client"
                 begin
                     FunctionKey := Setup.GetFunctionKey();
                     if FunctionKey <> '' then
-                        RequestHeaders.Add('x-functions-key', FunctionKey);
+                        RequestHeaders.Add(FunctionKeyHeaderTok, FunctionKey);
                     RequestHeaders.Add('Authorization', 'Bearer ' + OAuthMgt.GetAccessToken());
                 end;
         end;

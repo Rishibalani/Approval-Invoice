@@ -282,11 +282,12 @@ table 50101 "PN Approval Outbox"
             "Next Attempt At" := 0DT;
         end else begin
             Status := Status::Retrying;
-            // 30s, 60s, 120s, 240s ... capped so a long outage does not push
-            // the next attempt weeks into the future.
+            // Base, 2x, 4x, 8x ... (Retry Base Delay on setup), capped at Max.
+            // Retry Delay so a long outage does not push the next attempt
+            // weeks into the future.
             DelaySeconds := Setup."Retry Base Delay (Sec.)" * Power2("Attempt Count" - 1);
-            if DelaySeconds > 3600 then
-                DelaySeconds := 3600;
+            if DelaySeconds > Setup.GetMaxRetryDelaySec() then
+                DelaySeconds := Setup.GetMaxRetryDelaySec();
             "Next Attempt At" := CurrentDateTime() + (DelaySeconds * 1000);
         end;
 
