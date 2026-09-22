@@ -363,6 +363,9 @@ codeunit 50101 "PN Approval Event Subscriber"
         // Table and field numbers come from setup, shared with the action
         // handler so the capture-time and approve-time checks cannot drift.
         Setup.GetSetup();
+        // Optional: no table/fields configured means no check.
+        if not Setup.IsBankChangeCheckConfigured() then
+            exit(false);
         ChangeLogEntry.SetRange("Table No.", Setup.GetBankChangeTableNo());
         ChangeLogEntry.SetRange("Primary Key Field 1 Value", PurchaseHeader."Buy-from Vendor No.");
         ChangeLogEntry.SetFilter("Date and Time", '>%1', CreateDateTime(PurchaseHeader."Document Date", 0T));
@@ -384,5 +387,6 @@ codeunit 50101 "PN Approval Event Subscriber"
         Setup: Record "PN Approval Integration Setup";
     begin
         PerCompanyUpgradeTags.Add(Setup.GetConfigFieldsUpgradeTag());
+        PerCompanyUpgradeTags.Add(Setup.GetActionLinkExpiryUpgradeTag());
     end;
 }

@@ -602,7 +602,7 @@ codeunit 50102 "PN Approval Dispatch Runner"
             Body,
             true);
 
-        Email.Send(EmailMessage, Setup."Email Scenario");
+        Email.Send(EmailMessage, Enum::"Email Scenario"::Notification);
     end;
 
     // ------------------------------------------------------------------

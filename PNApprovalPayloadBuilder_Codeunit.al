@@ -377,8 +377,13 @@ codeunit 50105 "PN Approval Payload Builder"
         Policy.Add('highValue', Outbox."High Value");
         Policy.Add('bankDetailsChanged', Outbox."Bank Details Changed");
         // From setup, never a literal: the TTL the card advertises must be the
-        // TTL the token was actually minted with.
-        Policy.Add('actionTokenTtlMinutes', Setup.GetActionTokenTtlMinutes());
+        // TTL the token was actually minted with. The global expiry switch
+        // travels with it; Azure mints non-expiring tokens when it is off.
+        Policy.Add('actionTokenExpiryEnabled', Setup."Action Link Expiry Enabled");
+        if Setup."Action Link Expiry Enabled" then
+            Policy.Add('actionTokenTtlMinutes', Setup.GetActionTokenTtlMinutes())
+        else
+            Policy.Add('actionTokenTtlMinutes', 0);
         Policy.Add('requiresSignedInApproval', not CanApproveInChannel);
     end;
 

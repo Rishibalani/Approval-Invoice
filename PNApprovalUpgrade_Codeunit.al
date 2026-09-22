@@ -27,13 +27,18 @@ codeunit 50108 "PN Approval Upgrade"
         Setup: Record "PN Approval Integration Setup";
         UpgradeTag: Codeunit "Upgrade Tag";
     begin
-        if UpgradeTag.HasUpgradeTag(Setup.GetConfigFieldsUpgradeTag()) then
-            exit;
-
         // No row means nothing was ever configured in this company; the row is
         // created by GetSetup() on first use, with InitValue applied.
-        Setup.ApplyConfigDefaultsToExistingRow();
+        if not UpgradeTag.HasUpgradeTag(Setup.GetConfigFieldsUpgradeTag()) then begin
+            Setup.ApplyConfigDefaultsToExistingRow();
+            UpgradeTag.SetUpgradeTag(Setup.GetConfigFieldsUpgradeTag());
+        end;
 
-        UpgradeTag.SetUpgradeTag(Setup.GetConfigFieldsUpgradeTag());
+        // 1.0.0.4: keep link expiry ON for existing setups (field 104 would
+        // otherwise arrive as false and switch expiry off unasked).
+        if not UpgradeTag.HasUpgradeTag(Setup.GetActionLinkExpiryUpgradeTag()) then begin
+            Setup.ApplyActionLinkExpiryDefault();
+            UpgradeTag.SetUpgradeTag(Setup.GetActionLinkExpiryUpgradeTag());
+        end;
     end;
 }

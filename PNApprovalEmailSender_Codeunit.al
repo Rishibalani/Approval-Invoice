@@ -99,11 +99,9 @@ codeunit 50107 "PN Approval Email Sender"
 
         EmailMessage.Create(Recipients, Subject, Body, true);
 
-        // The scenario comes from Email Scenario on setup (Notification by
-        // default, not Default). It lets an administrator point approval mail
-        // at a different account from, say, posted sales invoices, without
-        // touching this code.
-        exit(Email.Send(EmailMessage, Setup."Email Scenario"));
+        // Notification scenario, not Default: assign an account to it in
+        // Email Scenario Assignment.
+        exit(Email.Send(EmailMessage, Enum::"Email Scenario"::Notification));
     end;
 
     // ------------------------------------------------------------------
@@ -253,8 +251,11 @@ codeunit 50107 "PN Approval Email Sender"
 
         if CanActInChannel then begin
             Builder.Append('<tr><td style="padding-top:24px;color:#999;font-size:12px;">');
-            Builder.Append('Approval buttons expire ' + Format(Setup.GetActionTokenTtlMinutes()) +
-                ' minutes after this was sent. After that, please use Business Central.');
+            if Setup."Action Link Expiry Enabled" then
+                Builder.Append('Approval buttons expire ' + Format(Setup.GetActionTokenTtlMinutes()) +
+                    ' minutes after this was sent. After that, please use Business Central.')
+            else
+                Builder.Append('These buttons stay active until the invoice is approved or rejected.');
             Builder.Append('</td></tr>');
         end;
 

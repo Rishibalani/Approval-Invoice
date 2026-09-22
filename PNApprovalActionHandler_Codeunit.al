@@ -376,6 +376,9 @@ codeunit 50100 "PN Approval Action Handler"
         Setup.GetSetup();
         if not Setup."Block On Vendor Bank Change" then
             exit(false);
+        // Optional: no table/fields configured means no check.
+        if not Setup.IsBankChangeCheckConfigured() then
+            exit(false);
         if ApprovalEntry."Table ID" <> Database::"Purchase Header" then
             exit(false);
         if not RecRef.Get(ApprovalEntry."Record ID to Approve") then

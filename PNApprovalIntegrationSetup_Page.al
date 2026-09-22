@@ -210,7 +210,21 @@ page 50104 "PN Approval Integration Setup"
                     Editable = false;
                     StyleExpr = ActionTokenStyle;
                 }
-                field("Action Token TTL (Min.)"; Rec."Action Token TTL (Min.)") { ApplicationArea = All; }
+                field("Action Link Expiry Enabled"; Rec."Action Link Expiry Enabled")
+                {
+                    ApplicationArea = All;
+
+                    trigger OnValidate()
+                    begin
+                        // Lifetime is only editable while expiry is on.
+                        CurrPage.Update();
+                    end;
+                }
+                field("Action Token TTL (Min.)"; Rec."Action Token TTL (Min.)")
+                {
+                    ApplicationArea = All;
+                    Editable = Rec."Action Link Expiry Enabled";
+                }
             }
 
             group(FinancialControls)
@@ -232,12 +246,12 @@ page 50104 "PN Approval Integration Setup"
                 field("Bank Change Table No."; Rec."Bank Change Table No.")
                 {
                     ApplicationArea = All;
-                    ToolTip = 'Table whose Change Log entries are checked for bank-detail changes. 23 is the Vendor table. The Change Log must be active for this table.';
+                    ToolTip = 'Optional. Table whose Change Log entries are checked for bank-detail changes (288 = Vendor Bank Account, 23 = Vendor). Leave blank to skip the bank-change check. The Change Log must be active for this table.';
                 }
                 field("Bank Change Field Filter"; Rec."Bank Change Field Filter")
                 {
                     ApplicationArea = All;
-                    ToolTip = 'Field numbers on that table that count as bank details, as a filter such as 288|289|290 (Bank Account No., Bank Branch No., IBAN). Field numbers differ by localisation - verify them. Used both when the notification is sent and when an approval arrives.';
+                    ToolTip = 'Optional. Field numbers on that table that count as bank details, as a filter such as 13|14|24. Field numbers differ by localisation - verify them. Leave blank to skip the bank-change check. Used both when the notification is sent and when an approval arrives.';
                 }
                 field("Amount Tolerance (LCY)"; Rec."Amount Tolerance (LCY)")
                 {
@@ -283,11 +297,6 @@ page 50104 "PN Approval Integration Setup"
             {
                 Caption = 'Advanced';
 
-                field("Email Scenario"; Rec."Email Scenario")
-                {
-                    ApplicationArea = All;
-                    ToolTip = 'Email scenario used for approval emails and failure alerts. Assign an email account to this scenario in Email Scenario Assignment, otherwise sending fails.';
-                }
                 field("Email Max Lines"; Rec."Email Max Lines")
                 {
                     ApplicationArea = All;

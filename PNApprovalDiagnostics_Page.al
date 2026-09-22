@@ -195,8 +195,7 @@ page 50106 "PN Approval Diagnostics"
         Builder.AppendLine('  Min. Amount (LCY): ' + Format(Setup."Min. Amount (LCY)"));
         Builder.AppendLine('  High Value Threshold (LCY): ' + Format(Setup."High Value Threshold (LCY)"));
         Builder.AppendLine('  Block On Vendor Bank Change: ' + Format(Setup."Block On Vendor Bank Change") +
-            '   (Change Log table ' + Format(Setup."Bank Change Table No.") +
-            ', fields ' + Setup."Bank Change Field Filter" + ')');
+            BankCheckText(Setup));
 
         // Same checks the runner applies before claiming a row. None of these
         // values has a default in code any more, so a blank one stops dispatch.
@@ -446,8 +445,7 @@ page 50106 "PN Approval Diagnostics"
         Builder.AppendLine('   Not checked here - step 6 sends a real email instead.');
         Builder.AppendLine('   If it fails, open Email Accounts and use Send Test Email,');
         Builder.AppendLine('   then check Email Scenario Assignment has an account against');
-        Builder.AppendLine('   the ' + Format(Setup."Email Scenario") + ' scenario (Email Scenario on');
-        Builder.AppendLine('   Approval Integration Setup). An unassigned scenario fails silently.');
+        Builder.AppendLine('   the Notification scenario. An unassigned scenario fails silently.');
 
         // ---- 3. Action links ----
         Builder.AppendLine('');
@@ -462,10 +460,13 @@ page 50106 "PN Approval Diagnostics"
         else
             Builder.AppendLine('   OK: action token secret is stored.');
 
-        if Setup."Action Token TTL (Min.)" <= 0 then
-            Builder.AppendLine('   WARNING: Action Link Lifetime (Minutes) is not set. Links cannot be built.')
+        if not Setup."Action Link Expiry Enabled" then
+            Builder.AppendLine('   OK: link expiry is OFF - buttons stay active until the invoice is decided.')
         else
-            Builder.AppendLine('   OK: links live for ' + Format(Setup."Action Token TTL (Min.)") + ' minutes.');
+            if Setup."Action Token TTL (Min.)" <= 0 then
+                Builder.AppendLine('   WARNING: Action Link Lifetime (Minutes) is not set. Links cannot be built.')
+            else
+                Builder.AppendLine('   OK: links live for ' + Format(Setup."Action Token TTL (Min.)") + ' minutes.');
 
         if Setup."Email Max Lines" <= 0 then
             Builder.AppendLine('   WARNING: Email Max. Lines is not set. The email cannot be built.');
@@ -525,7 +526,7 @@ page 50106 "PN Approval Diagnostics"
             Builder.AppendLine('   FAILED: ' + FailureReason);
             Builder.AppendLine('');
             Builder.AppendLine('   Most likely causes, in order:');
-            Builder.AppendLine('   a) The ' + Format(Setup."Email Scenario") + ' scenario has no account assigned.');
+            Builder.AppendLine('   a) The Notification scenario has no account assigned.');
             Builder.AppendLine('      Search "Email Scenario Assignment".');
             Builder.AppendLine('   b) No email account is configured at all.');
             Builder.AppendLine('      Search "Email Accounts" and use Send Test Email.');
@@ -589,5 +590,13 @@ page 50106 "PN Approval Diagnostics"
             '');
 
         Message(ResultMsg, ResultCode);
+    end;
+
+    local procedure BankCheckText(var Setup: Record "PN Approval Integration Setup"): Text
+    begin
+        if not Setup.IsBankChangeCheckConfigured() then
+            exit('   (bank-change table/fields not set - check skipped)');
+        exit('   (Change Log table ' + Format(Setup."Bank Change Table No.") +
+            ', fields ' + Setup."Bank Change Field Filter" + ')');
     end;
 }

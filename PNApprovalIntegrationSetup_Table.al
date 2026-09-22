@@ -271,7 +271,7 @@ table 50102 "PN Approval Integration Setup"
             InitValue = 30;
             MinValue = 5;
             MaxValue = 1440;
-            ToolTip = 'How long an Approve or Reject link stays live. Thirty minutes is long enough for somebody to finish a meeting and short enough that a forwarded screenshot is worthless by the time it spreads. Must not exceed the value configured on the Azure Function.';
+            ToolTip = 'How long an Approve or Reject link stays live when Action Link Expiry Enabled is on. Thirty minutes is long enough for somebody to finish a meeting and short enough that a forwarded screenshot is worthless by the time it spreads. Must not exceed the value configured on the Azure Function. Ignored when expiry is switched off.';
         }
         field(77; "Outlook Max Approve (LCY)"; Decimal)
         {
@@ -361,9 +361,15 @@ table 50102 "PN Approval Integration Setup"
         }
         field(95; "Email Scenario"; Enum "Email Scenario")
         {
+            // Added in 1.0.0.3 by mistake - approval mail always uses the
+            // Notification scenario, as it did before. Kept as Removed (not
+            // deleted) so upgrading a company that has 1.0.0.3/1.0.0.4 does
+            // not need a destructive schema sync.
             Caption = 'Email Scenario';
             DataClassification = SystemMetadata;
-            InitValue = Notification;
+            ObsoleteState = Removed;
+            ObsoleteReason = 'Not used. Approval emails always use the Notification email scenario.';
+            ObsoleteTag = '1.0.0.5';
         }
         field(96; "Amount Tolerance (LCY)"; Decimal)
         {
@@ -379,6 +385,7 @@ table 50102 "PN Approval Integration Setup"
             DataClassification = CustomerContent;
             InitValue = 23;
             MinValue = 0;
+            BlankZero = true;
             TableRelation = AllObjWithCaption."Object ID" where("Object Type" = const(Table));
         }
         field(98; "Bank Change Field Filter"; Text[250])
@@ -432,6 +439,13 @@ table 50102 "PN Approval Integration Setup"
             DataClassification = SystemMetadata;
             InitValue = 3;
             MinValue = 1;
+        }
+        field(104; "Action Link Expiry Enabled"; Boolean)
+        {
+            Caption = 'Action Link Expiry Enabled';
+            DataClassification = SystemMetadata;
+            InitValue = true;
+            ToolTip = 'Global switch for every channel (Outlook links, Teams link mode, WhatsApp buttons). On: Approve and Reject buttons expire after Action Link Lifetime (Minutes). Off: buttons never expire and stay usable until the invoice is approved or rejected - a used or already-decided button still reports that it was handled. With expiry off, turn on ActionToken__RequireSignedInUser in Azure so an old forwarded link cannot be used by someone else.';
         }
     }
 
@@ -693,7 +707,8 @@ table 50102 "PN Approval Integration Setup"
         RequirePositive("Max Retry Delay (Sec.)", FieldCaption("Max Retry Delay (Sec.)"));
         RequirePositive("Batch Size", FieldCaption("Batch Size"));
         RequirePositive("Created Hold Delay (Sec.)", FieldCaption("Created Hold Delay (Sec.)"));
-        RequirePositive("Action Token TTL (Min.)", FieldCaption("Action Token TTL (Min.)"));
+        if "Action Link Expiry Enabled" then
+            RequirePositive("Action Token TTL (Min.)", FieldCaption("Action Token TTL (Min.)"));
         if "Include Document Lines" then
             RequirePositive("Payload Max Lines", FieldCaption("Payload Max Lines"));
         if "Outlook Channel Enabled" then
@@ -702,11 +717,9 @@ table 50102 "PN Approval Integration Setup"
 
     local procedure CheckPolicyFields()
     begin
-        if not "Block On Vendor Bank Change" then
-            exit;
-        RequirePositive("Bank Change Table No.", FieldCaption("Bank Change Table No."));
-        if "Bank Change Field Filter" = '' then
-            Error(MissingConfigErr, FieldCaption("Bank Change Field Filter"));
+        // Bank Change Table No. and Bank Change Field No. Filter are optional.
+        // Blank means the vendor bank-change check is skipped - see
+        // IsBankChangeCheckConfigured. Nothing here is mandatory.
     end;
 
     local procedure RequirePositive(Value: Integer; FieldCaptionText: Text)
@@ -748,7 +761,6 @@ table 50102 "PN Approval Integration Setup"
             "OAuth Authority URL" := Defaults."OAuth Authority URL";
             "Token Lifetime Fallback (Sec.)" := Defaults."Token Lifetime Fallback (Sec.)";
             "Secret Expiry Warning (Days)" := Defaults."Secret Expiry Warning (Days)";
-            "Email Scenario" := Defaults."Email Scenario";
             "Amount Tolerance (LCY)" := Defaults."Amount Tolerance (LCY)";
             "Bank Change Table No." := Defaults."Bank Change Table No.";
             "Bank Change Field Filter" := Defaults."Bank Change Field Filter";
@@ -765,6 +777,24 @@ table 50102 "PN Approval Integration Setup"
     procedure GetConfigFieldsUpgradeTag(): Code[250]
     begin
         exit(ConfigFieldsUpgradeTagTok);
+    end;
+
+    /// <summary>
+    /// Field 104 arrives as false on a row created by an earlier version, which
+    /// would silently switch link expiry OFF on upgrade. This restores the
+    /// behaviour that row had before the switch existed: links expire.
+    /// </summary>
+    procedure ApplyActionLinkExpiryDefault()
+    begin
+        if not Get() then
+            exit;
+        "Action Link Expiry Enabled" := true;
+        Modify(false);
+    end;
+
+    procedure GetActionLinkExpiryUpgradeTag(): Code[250]
+    begin
+        exit(ActionLinkExpiryUpgradeTagTok);
     end;
 
     // ------------------------------------------------------------------
@@ -811,16 +841,23 @@ table 50102 "PN Approval Integration Setup"
         exit("Payload Max Lines");
     end;
 
+    /// <summary>
+    /// True when both bank-change fields are filled in. Either one blank means
+    /// the vendor bank-change check is skipped (treated as "no change"), even
+    /// with Block On Vendor Bank Change on. Optional by design.
+    /// </summary>
+    procedure IsBankChangeCheckConfigured(): Boolean
+    begin
+        exit(("Bank Change Table No." <> 0) and ("Bank Change Field Filter" <> ''));
+    end;
+
     procedure GetBankChangeTableNo(): Integer
     begin
-        RequirePositive("Bank Change Table No.", FieldCaption("Bank Change Table No."));
         exit("Bank Change Table No.");
     end;
 
     procedure GetBankChangeFieldFilter(): Text
     begin
-        if "Bank Change Field Filter" = '' then
-            Error(MissingConfigErr, FieldCaption("Bank Change Field Filter"));
         exit("Bank Change Field Filter");
     end;
 
@@ -929,4 +966,5 @@ table 50102 "PN Approval Integration Setup"
         MissingConfigErr: Label '%1 must have a value on the Approval Integration Setup page. There is no built-in default.', Comment = '%1 = field caption';
         TokenPathTok: Label '/%1/oauth2/v2.0/token', Locked = true;
         ConfigFieldsUpgradeTagTok: Label 'PN-APPROVAL-CONFIG-FIELDS-20260921', Locked = true;
+        ActionLinkExpiryUpgradeTagTok: Label 'PN-APPROVAL-LINK-EXPIRY-20260922', Locked = true;
 }
