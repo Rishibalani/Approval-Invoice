@@ -297,6 +297,8 @@ page 50104 "PN Approval Integration Setup"
             {
                 Caption = 'Advanced';
 
+                field("BC License Types"; Rec."BC License Types") { ApplicationArea = All; }
+                field("Require Subscription Plan"; Rec."Require Subscription Plan") { ApplicationArea = All; }
                 field("Email Max Lines"; Rec."Email Max Lines")
                 {
                     ApplicationArea = All;

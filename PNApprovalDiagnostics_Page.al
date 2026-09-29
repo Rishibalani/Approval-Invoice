@@ -339,6 +339,8 @@ page 50106 "PN Approval Diagnostics"
                 DelChr(User."Authentication Email", '<>', ' '));
             if User."Authentication Email" = '' then
                 Builder.AppendLine('  WARNING: no UPN. Teams and Outlook delivery will not resolve.');
+
+            Builder.AppendLine(BcAccessLine(ApprovalEntry."Approver ID"));
         end else begin
             Builder.AppendLine('WARNING: Approver ID "' + ApprovalEntry."Approver ID" +
                 '" does not match any User record.');
@@ -590,6 +592,28 @@ page 50106 "PN Approval Diagnostics"
             '');
 
         Message(ResultMsg, ResultCode);
+    end;
+
+    /// <summary>
+    /// Whether this approver gets a View in Business Central button, and why.
+    /// The commonest confusion is a User card reading Full User beside an empty
+    /// Licenses list, which means no licence is actually assigned.
+    /// </summary>
+    local procedure BcAccessLine(ApproverUserId: Code[50]): Text
+    var
+        UserSetup: Record "User Setup";
+        Reason: Text;
+        CanOpen: Boolean;
+    begin
+        if not UserSetup.Get(ApproverUserId) then
+            exit('  Business Central access: no Approval User Setup row, so no button.');
+
+        CanOpen := UserSetup.PNEvaluateBcAccess(Reason);
+
+        if CanOpen then
+            exit('  Business Central access: YES - ' + Reason)
+        else
+            exit('  Business Central access: NO (View in Business Central hidden) - ' + Reason);
     end;
 
     local procedure BankCheckText(var Setup: Record "PN Approval Integration Setup"): Text

@@ -244,7 +244,10 @@ codeunit 50107 "PN Approval Email Sender"
         // On every email in every case. When something goes wrong - a stale
         // token, a changed amount, a client that mangles the layout - this is
         // the route that always works.
-        if DeepLink <> '' then
+        // Hidden for an approver who cannot sign in to Business Central: the
+        // link would take them to an access-denied page, which reads as a
+        // broken email rather than a licence boundary.
+        if (DeepLink <> '') and UserSetup.PNIsBcLicensedUser() then
             Builder.Append(Button(DeepLink, 'View in Business Central', '#5a5a5a'));
 
         Builder.Append('</td></tr>');

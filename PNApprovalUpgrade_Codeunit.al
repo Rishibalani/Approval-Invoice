@@ -40,5 +40,11 @@ codeunit 50108 "PN Approval Upgrade"
             Setup.ApplyActionLinkExpiryDefault();
             UpgradeTag.SetUpgradeTag(Setup.GetActionLinkExpiryUpgradeTag());
         end;
+
+        // 1.0.0.8: licence rules for the View in Business Central button.
+        if not UpgradeTag.HasUpgradeTag(Setup.GetBcLicenceUpgradeTag()) then begin
+            Setup.ApplyBcLicenceDefaults();
+            UpgradeTag.SetUpgradeTag(Setup.GetBcLicenceUpgradeTag());
+        end;
     end;
 }

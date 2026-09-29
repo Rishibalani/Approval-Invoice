@@ -35,5 +35,8 @@ codeunit 50109 "PN Approval Install"
         // New installs get field 104 from InitValue (true); nothing to upgrade.
         if not UpgradeTag.HasUpgradeTag(Setup.GetActionLinkExpiryUpgradeTag()) then
             UpgradeTag.SetUpgradeTag(Setup.GetActionLinkExpiryUpgradeTag());
+
+        if not UpgradeTag.HasUpgradeTag(Setup.GetBcLicenceUpgradeTag()) then
+            UpgradeTag.SetUpgradeTag(Setup.GetBcLicenceUpgradeTag());
     end;
 }

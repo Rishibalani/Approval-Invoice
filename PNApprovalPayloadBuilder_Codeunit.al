@@ -304,6 +304,11 @@ codeunit 50105 "PN Approval Payload Builder"
 
             Approver.Add('substituteName', ResolveUserName(UserSetup.Substitute));
 
+            // Drives whether the channel shows a "View in Business Central"
+            // button. An approver without a Business Central licence would only
+            // reach an access-denied page, so they decide from the card itself.
+            Approver.Add('isBcUser', UserSetup.PNIsBcLicensedUser());
+
             IsSuspended := UserSetup."PN Channel Notifications Off";
         end else begin
             // No Approval User Setup row at all. Business Central would not
@@ -312,6 +317,11 @@ codeunit 50105 "PN Approval Payload Builder"
             Approver.Add('displayName', Outbox."Approver User ID");
             Approver.Add('mobileNumber', '');
             Approver.Add('consentGiven', false);
+
+            // Nothing is known about this person, so nothing is claimed. The
+            // channel keeps the link, which is the behaviour before this field
+            // existed.
+            Approver.Add('isBcUser', true);
         end;
 
         Approver.Add('suspended', IsSuspended);

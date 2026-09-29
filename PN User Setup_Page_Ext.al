@@ -46,6 +46,11 @@ pageextension 50100 "PN User Setup Page Ext" extends "User Setup"
                 ToolTip = 'A stricter approval ceiling for this person than the global one on Approval Integration Setup. At or above this amount they must approve inside Business Central rather than from a message. Leave at zero to use the global threshold. A value here can only tighten the control, never loosen it.';
             }
 
+            field("PN BC Access"; Rec."PN BC Access")
+            {
+                ApplicationArea = All;
+                ToolTip = 'Whether this approver sees a View in Business Central button. Automatic decides from their licence type and assigned subscription plans.';
+            }
             field("PN Channel Notifications Off"; Rec."PN Channel Notifications Off")
             {
                 ApplicationArea = All;

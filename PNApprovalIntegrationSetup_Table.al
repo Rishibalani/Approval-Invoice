@@ -440,6 +440,20 @@ table 50102 "PN Approval Integration Setup"
             InitValue = 3;
             MinValue = 1;
         }
+        field(105; "BC License Types"; Text[250])
+        {
+            Caption = 'BC License Types';
+            DataClassification = SystemMetadata;
+            InitValue = 'Full User|Limited User|External Accountant|External Administrator';
+            ToolTip = 'Licence types whose holders can open Business Central, separated by |. An approver whose licence type is not listed gets no View in Business Central button on any channel. Valid names: Full User, Limited User, External Administrator, External Accountant, External User, Device Only User, Windows Group, AAD Group, Application, Agent.';
+        }
+        field(106; "Require Subscription Plan"; Boolean)
+        {
+            Caption = 'Require Subscription Plan';
+            DataClassification = SystemMetadata;
+            InitValue = true;
+            ToolTip = 'On: an approver must also have at least one subscription plan assigned - the Licenses list on their User card. This catches a user whose License Type still reads Full User although no licence is paid for, which is the common case for an external approver. Off: the licence type alone decides.';
+        }
         field(104; "Action Link Expiry Enabled"; Boolean)
         {
             Caption = 'Action Link Expiry Enabled';
@@ -774,6 +788,29 @@ table 50102 "PN Approval Integration Setup"
         Modify(false);
     end;
 
+    /// <summary>
+    /// Whether a licence type name appears in BC License Types. Blank list
+    /// means nobody qualifies on licence type, which is deliberate: an empty
+    /// list is a configuration mistake, and hiding a button is the safer half
+    /// of that mistake.
+    /// </summary>
+    procedure IsBcLicenseTypeAllowed(LicenseTypeName: Text): Boolean
+    var
+        Allowed: List of [Text];
+        Entry: Text;
+    begin
+        if LicenseTypeName = '' then
+            exit(false);
+
+        Allowed := "BC License Types".Split('|');
+
+        foreach Entry in Allowed do
+            if UpperCase(Entry.Trim()) = UpperCase(LicenseTypeName.Trim()) then
+                exit(true);
+
+        exit(false);
+    end;
+
     procedure GetConfigFieldsUpgradeTag(): Code[250]
     begin
         exit(ConfigFieldsUpgradeTagTok);
@@ -790,6 +827,33 @@ table 50102 "PN Approval Integration Setup"
             exit;
         "Action Link Expiry Enabled" := true;
         Modify(false);
+    end;
+
+    /// <summary>
+    /// Fields 105 and 106 arrive blank/false on a row created by an earlier
+    /// version. Blank would hide every View in Business Central button, so the
+    /// upgrade writes the shipped defaults onto the existing row.
+    /// </summary>
+    procedure ApplyBcLicenceDefaults()
+    var
+        Defaults: Record "PN Approval Integration Setup" temporary;
+    begin
+        if not Get() then
+            exit;
+
+        Defaults.Init();
+
+        if "BC License Types" = '' then begin
+            "BC License Types" := Defaults."BC License Types";
+            "Require Subscription Plan" := Defaults."Require Subscription Plan";
+        end;
+
+        Modify(false);
+    end;
+
+    procedure GetBcLicenceUpgradeTag(): Code[250]
+    begin
+        exit(BcLicenceUpgradeTagTok);
     end;
 
     procedure GetActionLinkExpiryUpgradeTag(): Code[250]
@@ -967,4 +1031,5 @@ table 50102 "PN Approval Integration Setup"
         TokenPathTok: Label '/%1/oauth2/v2.0/token', Locked = true;
         ConfigFieldsUpgradeTagTok: Label 'PN-APPROVAL-CONFIG-FIELDS-20260921', Locked = true;
         ActionLinkExpiryUpgradeTagTok: Label 'PN-APPROVAL-LINK-EXPIRY-20260922', Locked = true;
+        BcLicenceUpgradeTagTok: Label 'PN-APPROVAL-BC-LICENCE-20260929', Locked = true;
 }

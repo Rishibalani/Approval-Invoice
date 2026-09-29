@@ -94,6 +94,12 @@ tableextension 50100 "PN User Setup Ext" extends "User Setup"
             ToolTip = 'A stricter approval ceiling for this person than the global one. Above this amount they must approve inside Business Central rather than from a message. Leave at zero to use the global threshold.';
         }
 
+        field(50106; "PN BC Access"; Enum "PN BC Access Mode")
+        {
+            Caption = 'Business Central Access';
+            DataClassification = OrganizationIdentifiableInformation;
+            ToolTip = 'Whether this approver sees a View in Business Central button. Automatic decides from their licence type and assigned subscription plans. Always show and Never show override that - use them for an approver whose licence this check cannot see, or one who should never be sent into the client.';
+        }
         field(50105; "PN Channel Notifications Off"; Boolean)
         {
             Caption = 'Suspend Channel Notifications';
@@ -246,6 +252,147 @@ tableextension 50100 "PN User Setup Ext" extends "User Setup"
                 exit(User."Full Name");
 
         exit("User ID");
+    end;
+
+    /// <summary>
+    /// Whether this approver can actually open Business Central, which decides
+    /// whether a channel shows them a "View in Business Central" button.
+    ///
+    /// WHY LICENCE TYPE ALONE IS NOT ENOUGH
+    ///
+    /// The User card's License Type says Full User for a user with no licence
+    /// assigned at all - it is what the account was created as, not what is
+    /// paid for today. The Licenses list on that same page can be empty beside
+    /// it. Checking only the type therefore sends people to an access-denied
+    /// page, so this also asks whether any subscription plan is assigned.
+    ///
+    /// Three inputs, in order:
+    ///   1. PN BC Access on this row. Always show or Never show ends it.
+    ///   2. Licence type, matched against BC License Types on the setup page.
+    ///   3. At least one subscription plan, when Require Subscription Plan is on.
+    /// </summary>
+    procedure PNIsBcLicensedUser(): Boolean
+    var
+        Reason: Text;
+    begin
+        exit(PNEvaluateBcAccess(Reason));
+    end;
+
+    /// <summary>
+    /// The same decision, with a sentence saying how it was reached. Used by
+    /// Approval Diagnostics, because "the button is missing" is otherwise a
+    /// question nobody can answer without a debugger.
+    /// </summary>
+    procedure PNEvaluateBcAccess(var Reason: Text) CanOpen: Boolean
+    var
+        Setup: Record "PN Approval Integration Setup";
+        User: Record User;
+        LicenseName: Text;
+        PlanCount: Integer;
+    begin
+        case "PN BC Access" of
+            "PN BC Access"::Always:
+                begin
+                    Reason := 'Business Central Access is set to Always show on this approver.';
+                    exit(true);
+                end;
+            "PN BC Access"::Never:
+                begin
+                    Reason := 'Business Central Access is set to Never show on this approver.';
+                    exit(false);
+                end;
+        end;
+
+        if "User ID" = '' then begin
+            Reason := 'No user ID on this Approval User Setup row.';
+            exit(false);
+        end;
+
+        User.SetRange("User Name", "User ID");
+        if not User.FindFirst() then begin
+            Reason := StrSubstNo('No User record named %1, so no way to sign in.', "User ID");
+            exit(false);
+        end;
+
+        LicenseName := PNLicenseTypeName(User);
+        Setup.GetSetup();
+
+        if not Setup.IsBcLicenseTypeAllowed(LicenseName) then begin
+            Reason := StrSubstNo('Licence type %1 is not in BC License Types on the setup page.', LicenseName);
+            exit(false);
+        end;
+
+        PlanCount := PNCountSubscriptionPlans(User."User Security ID");
+
+        if Setup."Require Subscription Plan" and (PlanCount = 0) then begin
+            Reason := StrSubstNo(
+                'Licence type %1, but no subscription plan is assigned - the Licenses list on the User card is empty.',
+                LicenseName);
+            exit(false);
+        end;
+
+        Reason := StrSubstNo('Licence type %1, %2 subscription plan(s) assigned.', LicenseName, PlanCount);
+        exit(true);
+    end;
+
+    /// <summary>
+    /// The licence type as a stable English name.
+    ///
+    /// Format() would return the translated caption, which stops matching the
+    /// setup list the moment somebody opens Business Central in another
+    /// language. An explicit map is boring and does not move.
+    /// </summary>
+    procedure PNLicenseTypeName(var User: Record User): Text
+    begin
+        case User."License Type" of
+            User."License Type"::"Full User":
+                exit('Full User');
+            User."License Type"::"Limited User":
+                exit('Limited User');
+            User."License Type"::"External Administrator":
+                exit('External Administrator');
+            User."License Type"::"External Accountant":
+                exit('External Accountant');
+            User."License Type"::"External User":
+                exit('External User');
+            User."License Type"::"Device Only User":
+                exit('Device Only User');
+            User."License Type"::"Windows Group":
+                exit('Windows Group');
+            User."License Type"::"AAD Group":
+                exit('AAD Group');
+            User."License Type"::Application:
+                exit('Application');
+        end;
+
+        // Anything newer than this build knows about - Agent, say - falls
+        // through to the platform's own name, which is what the setup list is
+        // written against anyway.
+
+        exit(Format(User."License Type"));
+    end;
+
+    /// <summary>
+    /// How many subscription plans are assigned to this user - the same list
+    /// the Licenses part on the User card shows.
+    ///
+    /// Read through the platform query rather than the User Plan table, which
+    /// is internal and cannot be read from an extension.
+    /// </summary>
+    procedure PNCountSubscriptionPlans(UserSecurityId: Guid) PlanCount: Integer
+    var
+        UsersInPlans: Query "Users in Plans";
+    begin
+        if IsNullGuid(UserSecurityId) then
+            exit(0);
+
+        UsersInPlans.SetRange(User_Security_ID, UserSecurityId);
+        UsersInPlans.Open();
+
+        while UsersInPlans.Read() do
+            PlanCount += 1;
+
+        UsersInPlans.Close();
     end;
 
     procedure PNResolveUserSecurityId(): Guid

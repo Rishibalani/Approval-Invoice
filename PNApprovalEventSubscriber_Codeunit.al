@@ -388,5 +388,6 @@ codeunit 50101 "PN Approval Event Subscriber"
     begin
         PerCompanyUpgradeTags.Add(Setup.GetConfigFieldsUpgradeTag());
         PerCompanyUpgradeTags.Add(Setup.GetActionLinkExpiryUpgradeTag());
+        PerCompanyUpgradeTags.Add(Setup.GetBcLicenceUpgradeTag());
     end;
 }
