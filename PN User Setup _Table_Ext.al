@@ -167,26 +167,26 @@ tableextension 50100 "PN User Setup Ext" extends "User Setup"
     ///
     /// Swap to Block B before UAT or production.
     /// </summary>
-    procedure PNResolveEmail() Email: Text[250]
-    begin
-        if "User ID" = '' then
-            exit('');
+    // procedure PNResolveEmail() Email: Text[250]
+    // begin
+    //     if "User ID" = '' then
+    //         exit('');
 
-        exit(CopyStr("E-Mail", 1, 250));
-    end;
+    //     exit(CopyStr("E-Mail", 1, 250));
+    // end;
 
-    /// <summary>Which source supplied the address, for the diagnostic page.</summary>
-    procedure PNEmailSource(): Text
-    begin
-        if "User ID" = '' then
-            exit('no user id');
+    // /// <summary>Which source supplied the address, for the diagnostic page.</summary>
+    // procedure PNEmailSource(): Text
+    // begin
+    //     if "User ID" = '' then
+    //         exit('no user id');
 
-        if "E-Mail" <> '' then
-            exit('Approval User Setup, E-Mail (BLOCK A - local testing)');
+    //     if "E-Mail" <> '' then
+    //         exit('Approval User Setup, E-Mail (BLOCK A - local testing)');
 
-        exit('NOWHERE - E-Mail is blank on this row. Block A reads only this field; ' +
-             'the User-table version is Block B in PN User Setup _Table_Ext.al');
-    end;
+    //     exit('NOWHERE - E-Mail is blank on this row. Block A reads only this field; ' +
+    //          'the User-table version is Block B in PN User Setup _Table_Ext.al');
+    // end;
 
     // ┌────────────────────────────────────────────────────────────────┐
     // │  BLOCK B - UAT AND PRODUCTION - COMMENTED OUT                  │
@@ -204,35 +204,35 @@ tableextension 50100 "PN User Setup Ext" extends "User Setup"
     // /// field to fall out of step, and a new approver works on day one with
     // /// nobody having to configure anything.
     // /// </summary>
-    // procedure PNResolveEmail() Email: Text[250]
-    // var
-    //     User: Record User;
-    // begin
-    //     if "User ID" = '' then
-    //         exit('');
-    //
-    //     User.SetRange("User Name", "User ID");
-    //     if User.FindFirst() then
-    //         exit(User."Authentication Email");
-    //
-    //     exit('');
-    // end;
-    //
-    // /// <summary>Which source supplied the address, for the diagnostic page.</summary>
-    // procedure PNEmailSource(): Text
-    // var
-    //     User: Record User;
-    // begin
-    //     if "User ID" = '' then
-    //         exit('no user id');
-    //
-    //     User.SetRange("User Name", "User ID");
-    //     if User.FindFirst() then
-    //         if User."Authentication Email" <> '' then
-    //             exit('Users, Authentication Email (BLOCK B - UAT/production)');
-    //
-    //     exit('NOWHERE - no Authentication Email on this user''s User record');
-    // end;
+    procedure PNResolveEmail() Email: Text[250]
+    var
+        User: Record User;
+    begin
+        if "User ID" = '' then
+            exit('');
+    
+        User.SetRange("User Name", "User ID");
+        if User.FindFirst() then
+            exit(User."Authentication Email");
+    
+        exit('');
+    end;
+    
+    /// <summary>Which source supplied the address, for the diagnostic page.</summary>
+    procedure PNEmailSource(): Text
+    var
+        User: Record User;
+    begin
+        if "User ID" = '' then
+            exit('no user id');
+    
+        User.SetRange("User Name", "User ID");
+        if User.FindFirst() then
+            if User."Authentication Email" <> '' then
+                exit('Users, Authentication Email (BLOCK B - UAT/production)');
+    
+        exit('NOWHERE - no Authentication Email on this user''s User record');
+    end;
 
     // ==================================================================
     //  END OF EMAIL RESOLUTION
@@ -318,7 +318,8 @@ tableextension 50100 "PN User Setup Ext" extends "User Setup"
         Setup.GetSetup();
 
         if not Setup.IsBcLicenseTypeAllowed(LicenseName) then begin
-            Reason := StrSubstNo('Licence type %1 is not in BC License Types on the setup page.', LicenseName);
+            Reason := StrSubstNo(
+                'Licence type %1 is not in the allowed list (%2).', LicenseName, Setup.GetBcLicenseTypes());
             exit(false);
         end;
 

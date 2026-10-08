@@ -50,6 +50,31 @@ page 50104 "PN Approval Integration Setup"
             {
                 Caption = 'Authentication';
 
+                // WHY THIS TOGGLE EXISTS
+                //
+                // AL has no way to say "put the cursor here" - the modern
+                // client ignores Activate(), and there is no Focus property.
+                // The only control the page has over the landing spot is which
+                // controls are editable at all: a read-only control is not in
+                // the focus order, so the client skips it.
+                //
+                // Leaving the four masked boxes read-only until this is
+                // switched on keeps the cursor out of them on open. It also
+                // closes a real hazard: these boxes write to Isolated Storage
+                // on leave, so a stray keystroke in a focused Function Key box
+                // used to overwrite a key that was already stored.
+                field(SecretsUnlocked; SecretsUnlocked)
+                {
+                    ApplicationArea = All;
+                    Caption = 'Change Keys and Secrets';
+                    ToolTip = 'Switch this on before typing a new function key, signing secret, client secret or action token secret. It is off every time the page opens, so the cursor never lands in a secret box and a stray keystroke cannot overwrite a value that is already stored.';
+
+                    trigger OnValidate()
+                    begin
+                        CurrPage.Update(false);
+                    end;
+                }
+
                 field("Auth Mode"; Rec."Auth Mode")
                 {
                     ApplicationArea = All;
@@ -74,6 +99,7 @@ page 50104 "PN Approval Integration Setup"
                         ApplicationArea = All;
                         Caption = 'Function Key';
                         ExtendedDatatype = Masked;
+                        Editable = SecretsUnlocked;
                         ToolTip = 'Paste the Azure Function key here and press Enter. It is written to Isolated Storage and this box is cleared immediately. Running locally with func start, any placeholder works - the local runtime ignores the key entirely.';
 
                         trigger OnValidate()
@@ -100,6 +126,7 @@ page 50104 "PN Approval Integration Setup"
                         ApplicationArea = All;
                         Caption = 'Signing Secret';
                         ExtendedDatatype = Masked;
+                        Editable = SecretsUnlocked;
                         ToolTip = 'Must match the Azure Function setting Dispatch__SigningSecret byte for byte. A mismatch produces a bare 401 with no explanation, so paste rather than type.';
 
                         trigger OnValidate()
@@ -129,6 +156,7 @@ page 50104 "PN Approval Integration Setup"
                         ApplicationArea = All;
                         Caption = 'Client Secret';
                         ExtendedDatatype = Masked;
+                        Editable = SecretsUnlocked;
                         ToolTip = 'The Entra application client secret. Storing a new value clears the cached access token immediately.';
 
                         trigger OnValidate()
@@ -196,6 +224,7 @@ page 50104 "PN Approval Integration Setup"
                     ApplicationArea = All;
                     Caption = 'Action Token Secret';
                     ExtendedDatatype = Masked;
+                    Editable = SecretsUnlocked;
                     ToolTip = 'Must match ActionToken__SigningSecret on the Azure Function byte for byte. A mismatch makes every link fail with no explanation, so paste rather than type.';
 
                     trigger OnValidate()
@@ -561,6 +590,11 @@ page 50104 "PN Approval Integration Setup"
         FunctionKeyStored: Boolean;
         SigningSecretStored: Boolean;
         ClientSecretStored: Boolean;
+
+        // False on every open - it is a page variable, so nothing persists it.
+        // That is deliberate: it is what keeps the masked boxes out of the
+        // focus order each time the page is opened.
+        SecretsUnlocked: Boolean;
 
         ShowEntraFields: Boolean;
         ShowFunctionKey: Boolean;

@@ -602,6 +602,7 @@ page 50106 "PN Approval Diagnostics"
     local procedure BcAccessLine(ApproverUserId: Code[50]): Text
     var
         UserSetup: Record "User Setup";
+        Setup: Record "PN Approval Integration Setup";
         Reason: Text;
         CanOpen: Boolean;
     begin
@@ -609,6 +610,11 @@ page 50106 "PN Approval Diagnostics"
             exit('  Business Central access: no Approval User Setup row, so no button.');
 
         CanOpen := UserSetup.PNEvaluateBcAccess(Reason);
+
+        Setup.GetSetup();
+
+        if Setup.IsUsingDefaultBcLicenseTypes() then
+            Reason += ' (BC License Types is blank on the setup page, so the shipped default list is in force.)';
 
         if CanOpen then
             exit('  Business Central access: YES - ' + Reason)

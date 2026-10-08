@@ -802,13 +802,35 @@ table 50102 "PN Approval Integration Setup"
         if LicenseTypeName = '' then
             exit(false);
 
-        Allowed := "BC License Types".Split('|');
+        // A blank list means the field was never filled in - a row created by
+        // an earlier version, or a publish that skipped the upgrade codeunit,
+        // which is what a dev publish from VS Code does. Falling back to the
+        // shipped list beats the alternative, which is hiding the button for
+        // EVERY approver until somebody notices this one blank field.
+        Allowed := GetBcLicenseTypes().Split('|');
 
         foreach Entry in Allowed do
             if UpperCase(Entry.Trim()) = UpperCase(LicenseTypeName.Trim()) then
                 exit(true);
 
         exit(false);
+    end;
+
+    /// <summary>
+    /// The configured licence-type list, or the shipped default when the field
+    /// is blank. Diagnostics prints which of the two is in force.
+    /// </summary>
+    procedure GetBcLicenseTypes(): Text
+    begin
+        if "BC License Types" <> '' then
+            exit("BC License Types");
+
+        exit(DefaultBcLicenseTypesTok);
+    end;
+
+    procedure IsUsingDefaultBcLicenseTypes(): Boolean
+    begin
+        exit("BC License Types" = '');
     end;
 
     procedure GetConfigFieldsUpgradeTag(): Code[250]
@@ -1032,4 +1054,5 @@ table 50102 "PN Approval Integration Setup"
         ConfigFieldsUpgradeTagTok: Label 'PN-APPROVAL-CONFIG-FIELDS-20260921', Locked = true;
         ActionLinkExpiryUpgradeTagTok: Label 'PN-APPROVAL-LINK-EXPIRY-20260922', Locked = true;
         BcLicenceUpgradeTagTok: Label 'PN-APPROVAL-BC-LICENCE-20260929', Locked = true;
+        DefaultBcLicenseTypesTok: Label 'Full User|Limited User|External Accountant|External Administrator', Locked = true;
 }
